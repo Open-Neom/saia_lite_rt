@@ -1,0 +1,13 @@
+name: saia_lite_rt_example
+description: An example demonstrating how to use saia_lite_rt package.
+publish_to: 'none'
+
+environment:
+  sdk: ">=3.10.0 <4.0.0"
+  flutter: ">=3.19.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  saia_lite_rt:
+    path: ../
