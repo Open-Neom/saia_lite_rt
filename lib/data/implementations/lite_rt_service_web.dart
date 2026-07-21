@@ -100,11 +100,27 @@ extension type _LiteRtLmStreamReadResult._(JSObject _) implements JSObject {
 class WebLiteRtService implements SaiaLiteRtService {
   @override
   Future<void> loadLiteRt({String? wasmPath}) async {
-    if (!web.window.has('loadLiteRt')) {
-      await _loadModuleScriptGeneral('https://cdn.jsdelivr.net/npm/@litertjs/core/+esm');
+    if (web.window.has('__saia_litert_wasm_loaded')) return;
+    if (web.window.has('__saia_litert_wasm_loading')) return;
+
+    web.window.setProperty('__saia_litert_wasm_loading'.toJS, true.toJS);
+    try {
+      if (!web.window.has('loadLiteRt')) {
+        await _loadModuleScriptGeneral('https://cdn.jsdelivr.net/npm/@litertjs/core/+esm');
+      }
+      final wasmUrl = wasmPath ?? 'https://cdn.jsdelivr.net/npm/@litertjs/core/wasm/';
+      await _jsLoadLiteRt(wasmUrl.toJS).toDart;
+      web.window.setProperty('__saia_litert_wasm_loaded'.toJS, true.toJS);
+    } catch (e) {
+      final errStr = e.toString().toLowerCase();
+      if (errStr.contains('already loading') || errStr.contains('already loaded')) {
+        web.window.setProperty('__saia_litert_wasm_loaded'.toJS, true.toJS);
+        return;
+      }
+      rethrow;
+    } finally {
+      web.window.delete('__saia_litert_wasm_loading'.toJS);
     }
-    final wasmUrl = wasmPath ?? 'https://cdn.jsdelivr.net/npm/@litertjs/core/wasm/';
-    await _jsLoadLiteRt(wasmUrl.toJS).toDart;
   }
 
   @override

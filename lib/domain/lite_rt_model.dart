@@ -6,9 +6,10 @@ enum LiteRtModelType {
   embeddings,
   vision,
   audio,
+  tts,
 }
 
-/// Metadata information for a LiteRT model available for edge execution.
+/// Metadata information for a LiteRt model available for edge execution.
 class LiteRtModelInfo {
   final String id;
   final String name;
@@ -79,6 +80,30 @@ class LiteRtModelCatalog {
       type: LiteRtModelType.audio,
       downloadUrl: 'https://storage.googleapis.com/tfhub-lite-models/google/lite-model/yamnet/tflite/1.tflite',
       sizeBytes: 15000000, // ~15 MB
+    ),
+    LiteRtModelInfo(
+      id: 'es_MX-claude-high',
+      name: 'Claude (LiteRT TTS)',
+      description: 'Modelo neural de síntesis de voz (Text-to-Speech) en español local para lectura y respuestas habladas en tiempo real.',
+      type: LiteRtModelType.tts,
+      downloadUrl: 'https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_MX/claude/high/es_MX-claude-high.tflite',
+      sizeBytes: 28000000, // ~28 MB
+    ),
+    LiteRtModelInfo(
+      id: 'matcha-tts',
+      name: 'Matcha-TTS',
+      description: 'Modelo local FFT-free acelerado por GPU diseñado para inferencia de síntesis de voz en el navegador.',
+      type: LiteRtModelType.tts,
+      downloadUrl: 'https://huggingface.co/collections/litert-community/matcha-tts-tflite',
+      sizeBytes: 25000000, // ~25 MB
+    ),
+    LiteRtModelInfo(
+      id: 'kokoro-82m',
+      name: 'Kokoro-82M',
+      description: 'Sintetizador de voz local multi-etapa (StyleTTS2 + ISTFTNet) de alta calidad optimizado para ejecuciones offline.',
+      type: LiteRtModelType.tts,
+      downloadUrl: 'https://huggingface.co/collections/litert-community/kokoro-82m-tflite',
+      sizeBytes: 82000000, // ~82 MB
     ),
   ];
 }
