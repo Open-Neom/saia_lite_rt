@@ -595,13 +595,39 @@ class LiteRtTextEmbedderWeb implements LiteRtTextEmbedder {
       return Float32List(0);
     }
     final first = embeddings.toDart[0];
-    final floats = first.getProperty<JSFloat32Array?>('floatEmbedding'.toJS);
-    if (floats == null) {
+
+    // MediaPipe devuelve `floatEmbedding` como array JS PLANO (`number[]`),
+    // no como `Float32Array`. Leerlo como `JSFloat32Array` lanzaba
+    //
+    //   type 'List<dynamic>' is not a subtype of type 'NativeFloat32List?'
+    //
+    // y el proveedor entero caía al `catch`: los embeddings semánticos en web
+    // NUNCA cargaban y la memoria se quedaba en el vectorizador léxico, que
+    // halla duplicados pero no sinónimos. Sin error visible — el fallback
+    // seguía respondiendo.
+    //
+    // Se lee como array genérico y se convierte elemento a elemento, que
+    // funciona con las dos formas por si una versión devuelve tipado.
+    final crudo = first.getProperty<JSAny?>('floatEmbedding'.toJS);
+    if (crudo == null) {
       // Ocurre si el embebedor se configuró con `quantize: true`, que aquí
       // no se hace. Devolver vacío en vez de inventar un vector.
       return Float32List(0);
     }
-    final out = floats.toDart;
+
+    final Float32List out;
+    if (crudo.isA<JSFloat32Array>()) {
+      out = (crudo as JSFloat32Array).toDart;
+    } else if (crudo.isA<JSArray>()) {
+      final lista = (crudo as JSArray<JSNumber>).toDart;
+      out = Float32List(lista.length);
+      for (var i = 0; i < lista.length; i++) {
+        out[i] = lista[i].toDartDouble;
+      }
+    } else {
+      return Float32List(0);
+    }
+
     _dimensions = out.length;
     return out;
   }
