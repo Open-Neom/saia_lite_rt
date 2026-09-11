@@ -17,6 +17,20 @@ class _StubLiteRtService implements SaiaLiteRtService {
     throw UnsupportedError('LiteRT is only supported on the Web platform.');
   }
 
+  /// Fuera de web no hay WebGPU de navegador. `false`, sin lanzar: es una
+  /// consulta, y el llamador debe poder preguntarla en cualquier plataforma.
+  @override
+  Future<bool> isWebGpuAvailable() async => false;
+
+  @override
+  Future<LiteRtTextEmbedder> loadTextEmbedder(
+    String modelPath, {
+    bool l2Normalize = true,
+  }) async {
+    // En nativo la vía de embeddings es GGUF (fllama), no esta.
+    throw UnsupportedError('LiteRT text embedder is Web-only.');
+  }
+
   @override
   Future<void> loadLiteRtLm({String? moduleUrl}) async {
     throw UnsupportedError('LiteRT-LM is only supported on the Web platform.');

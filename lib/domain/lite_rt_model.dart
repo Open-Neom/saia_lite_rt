@@ -41,13 +41,33 @@ class LiteRtModelCatalog {
   LiteRtModelCatalog._();
 
   static const List<LiteRtModelInfo> all = [
+    // ── Chat (LiteRT-LM) ───────────────────────────────────────────────
+    //
+    // Gemma NO está en esta lista a propósito. Sus bundles `.task` en
+    // HuggingFace (google/gemma-3n-*, litert-community/Gemma3-*) están
+    // *gated*: responden 401 sin un token de HF y sin haber aceptado la
+    // licencia de Google. Un fetch desde el navegador no puede hacer eso,
+    // así que ofrecerlo aquí sería prometer una descarga que siempre falla.
+    //
+    // Estas dos URLs se verificaron con HEAD: 200, tamaño real, y cabecera
+    // CORS presente para origen local.
     LiteRtModelInfo(
-      id: 'gemma-3n',
-      name: 'Gemma 3n (Nano)',
-      description: 'Modelo de lenguaje ultraligero de Google (LLM) optimizado para chat y razonamiento local en navegadores.',
+      id: 'qwen25-05b',
+      name: 'Qwen2.5 0.5B Instruct',
+      description: 'Modelo de lenguaje ligero para chat y razonamiento local en el navegador. Descarga rápida.',
       type: LiteRtModelType.chat,
-      downloadUrl: 'https://huggingface.co/collections/litert-community/gemma-3n-tflite',
-      sizeBytes: 1500000000, // ~1.5 GB
+      downloadUrl:
+          'https://huggingface.co/litert-community/Qwen2.5-0.5B-Instruct/resolve/main/Qwen2.5-0.5B-Instruct_multi-prefill-seq_q8_ekv1280.task',
+      sizeBytes: 546000000, // 521 MB medidos
+    ),
+    LiteRtModelInfo(
+      id: 'qwen25-15b',
+      name: 'Qwen2.5 1.5B Instruct',
+      description: 'Modelo de lenguaje de mayor capacidad para chat local. Requiere más memoria de GPU.',
+      type: LiteRtModelType.chat,
+      downloadUrl:
+          'https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv1280.task',
+      sizeBytes: 1598000000, // 1524 MB medidos
     ),
     LiteRtModelInfo(
       id: 'minilm-l6',
@@ -118,8 +138,35 @@ abstract class LiteRtModel {
   Future<void> dispose();
 }
 
+/// Embebedor de texto local, sobre MediaPipe Text Embedder.
+///
+/// Existe aparte de [LiteRtModel] porque ese expone `run(Float32List,
+/// shape)` — un único tensor float32 — y un modelo de embeddings tipo BERT
+/// necesita tres tensores ENTEROS (`input_ids`, `attention_mask`,
+/// `token_type_ids`) más un tokenizador WordPiece. MediaPipe Text Embedder
+/// hace la tokenización y el pooling por dentro, así que la interfaz puede
+/// ser texto→vector y ya.
+abstract class LiteRtTextEmbedder {
+  /// Ancho del vector que produce este modelo.
+  int get dimensions;
+
+  /// Vectoriza [text]. Síncrono: la API de MediaPipe lo es.
+  Float32List embed(String text);
+
+  /// Libera el modelo nativo.
+  void dispose();
+}
+
 /// Interface representing a loaded and compiled LiteRT-LM language model.
 abstract class LiteRtLmModel {
+  /// Delegado con el que se compiló realmente: `'GPU'` o `'CPU'`.
+  ///
+  /// No es cosmético. El delegado de GPU puede rechazar un modelo cuyas
+  /// operaciones no soporta, y en ese caso se cae a CPU — que funciona pero
+  /// es mucho más lento. La UI tiene que poder decir cuál está corriendo en
+  /// vez de afirmar "GPU" siempre.
+  String get backend;
+
   /// Generates a streaming response for the given prompt.
   Stream<String> generateStream(
     String prompt, {
