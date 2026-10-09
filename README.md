@@ -10,7 +10,7 @@ This package provides a unified, platform-aware interface to load and execute ma
 
 * **Unified API:** Common interface for general `.tflite` model inference and generative `.litertlm` (LLMs) model streaming.
 * **Zero-Config Web Acceleration:** Automatically loads and compiles the LiteRT core engine and WebAssembly/WebGPU components from CDNs dynamically. No manual `<script>` tags or WASM file copying is required in your web projects.
-* **Built-in Model Catalog:** Includes out-of-the-box configurations and metadata for popular models (Gemma 3n, MiniLM Embeddings, MobileNet V3, YOLOv5, YAMNet).
+* **Built-in Model Catalog:** Includes out-of-the-box configurations and metadata for popular models (Gemma 3n, EmbeddingGemma 2, MiniLM Embeddings, MobileNet V3, YOLOv5, YAMNet).
 
 ## Installation
 

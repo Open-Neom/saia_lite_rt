@@ -1,3 +1,8 @@
+## 1.1.0
+
+* Added `EmbeddingGemma 2 (740M Multimodal)` (`embeddinggemma-2-740m`) to `LiteRtModelCatalog`.
+* Native edge multimodal embedding support (text, code, image, audio) with 8K context and Matryoshka Representation Learning (MRL).
+
 ## 1.0.0
 
 * Initial release of `saia_lite_rt`.

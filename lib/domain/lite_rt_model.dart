@@ -70,6 +70,15 @@ class LiteRtModelCatalog {
       sizeBytes: 1598000000, // 1524 MB medidos
     ),
     LiteRtModelInfo(
+      id: 'embeddinggemma-2-740m',
+      name: 'EmbeddingGemma 2 (740M Multimodal)',
+      description: 'Embeddings multimodales nativos (texto, código, imágenes y audio) en el Edge con 8K contexto y MRL dinámico.',
+      type: LiteRtModelType.embeddings,
+      downloadUrl:
+          'https://huggingface.co/litert-community/embeddinggemma-2-740m-litert-lm/resolve/main/embeddinggemma_2_740m.litertlm',
+      sizeBytes: 567000000, // ~567 MB multimodal completo (~191 MB text-only)
+    ),
+    LiteRtModelInfo(
       id: 'minilm-l6',
       name: 'MiniLM-L6-v2 Embeddings',
       description: 'Generación local de embeddings de texto de alto rendimiento para búsqueda semántica y base de datos vectorial privada.',
