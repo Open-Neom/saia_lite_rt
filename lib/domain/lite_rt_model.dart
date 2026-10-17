@@ -134,10 +134,67 @@ class LiteRtModelCatalog {
       downloadUrl: 'https://huggingface.co/collections/litert-community/kokoro-82m-tflite',
       sizeBytes: 82000000, // ~82 MB
     ),
+    // ── Modelos Ultra-Ligeros Embebidos (codebase_ia: KittenTTS, Audio8, Needle 3, Whistle) ──
+    LiteRtModelInfo(
+      id: 'kitten-tts-nano-int8',
+      name: 'KittenTTS Nano 0.8 (15M INT8)',
+      description: 'Síntesis de voz neural ultra-ligera (15M parámetros, <25 MB ONNX/LiteRT) que corre en tiempo real en CPU sin GPU.',
+      type: LiteRtModelType.tts,
+      downloadUrl: 'https://huggingface.co/KittenML/kitten-tts-nano-0.8-int8/resolve/main/kitten_tts_nano_v0_8.onnx',
+      sizeBytes: 25000000, // ~25 MB
+    ),
+    LiteRtModelInfo(
+      id: 'kitten-tts-micro',
+      name: 'KittenTTS Micro 0.8 (40M)',
+      description: 'Síntesis de voz expresiva local (40M parámetros, 41 MB) para anuncios comunitarios y alertas audibles off-grid.',
+      type: LiteRtModelType.tts,
+      downloadUrl: 'https://huggingface.co/KittenML/kitten-tts-micro-0.8/resolve/main/kitten_tts_micro_v0_8.onnx',
+      sizeBytes: 41000000, // ~41 MB
+    ),
+    LiteRtModelInfo(
+      id: 'kitten-tts-2-emb4',
+      name: 'KittenTTS 2 (1.7B 1-bit emb4 Multilingüe)',
+      description: 'TTS multilingüe (20 idiomas incl. Español, 47 voces) con etiquetas de emoción [excited]/[whisper] y clonación de voz en CPU.',
+      type: LiteRtModelType.tts,
+      downloadUrl: 'https://huggingface.co/KittenML/kitten-tts-2-emb4/resolve/main/kitten_tts_2_emb4.gguf',
+      sizeBytes: 530579456, // ~506 MiB (1-bit weights + 4-bit embeddings)
+    ),
+    LiteRtModelInfo(
+      id: 'audio8-tts-01b-int8',
+      name: 'Audio8-TTS 0.1B (Mamba2 + Attention INT8)',
+      description: 'TTS multilingüe con soporte nativo de Español y clonación zero-shot basado en arquitectura híbrida Falcon-H1 Mamba2.',
+      type: LiteRtModelType.tts,
+      downloadUrl: 'https://huggingface.co/Audio8/Audio8-TTS-0.1B-ONNX-INT8/resolve/main/model_int8.onnx',
+      sizeBytes: 95000000, // ~95 MB
+    ),
+    LiteRtModelInfo(
+      id: 'needle-3-mobile',
+      name: 'Needle 3 (2.125-bit .cact Tool Calling + Embeddings)',
+      description: 'Motor unificado de 18 MB para extracción JSON restringida por gramática, clasificación de emergencias, tool-calling y embeddings.',
+      type: LiteRtModelType.chat,
+      downloadUrl: 'https://huggingface.co/cactus-compute/needle-3-mobile/resolve/main/needle-3.cact',
+      sizeBytes: 18874368, // ~18 MB (rango 8-29 MB en 2.125 bits/peso)
+    ),
+    LiteRtModelInfo(
+      id: 'whistle-stt-int4',
+      name: 'Whistle STT (16.9 MB Speech-to-Text)',
+      description: 'Reconocimiento de voz a texto offline en Español e Inglés (8.6x más pequeño que Whisper base) para comandos de voz comunitarios.',
+      type: LiteRtModelType.audio,
+      downloadUrl: 'https://huggingface.co/cactus-compute/whistle-stt/resolve/main/whistle.cact',
+      sizeBytes: 17720934, // ~16.9 MB
+    ),
   ];
 
   static List<LiteRtModelInfo> byType(LiteRtModelType type) =>
       all.where((m) => m.type == type).toList(growable: false);
+
+  /// Filtra los modelos ideales para dispositivos móviles de bajos recursos
+  /// (por defecto <= 50 MB por modelo), permitiendo correr STT + Intent/Embeddings + TTS
+  /// simultáneamente en menos de 65 MB totales de almacenamiento/RAM.
+  static List<LiteRtModelInfo> forLowResourceMobile({
+    int maxModelSizeBytes = 50 * 1024 * 1024,
+  }) =>
+      all.where((m) => m.sizeBytes <= maxModelSizeBytes).toList(growable: false);
 
   static LiteRtModelInfo? findById(String id) {
     for (final m in all) {
