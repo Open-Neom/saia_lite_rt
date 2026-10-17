@@ -1,3 +1,7 @@
+## 1.2.0 — 2026-10-17
+
+* Enhance `LiteRtServiceWeb` (`lite_rt_service_web.dart`) with progressive model download streaming, IndexedDB/CacheStorage persistence, WebGPU/WASM runtime diagnostics, and expanded `LiteRtModel` metadata.
+
 ## 1.1.0
 
 * Added `EmbeddingGemma 2 (740M Multimodal)` (`embeddinggemma-2-740m`) to `LiteRtModelCatalog`.

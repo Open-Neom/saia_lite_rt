@@ -18,6 +18,19 @@ class LiteRtModelInfo {
   final String downloadUrl;
   final int sizeBytes;
 
+  /// Whether downloading this model requires a HuggingFace token (`hf_...`)
+  /// and accepting the upstream model license.
+  final bool requiresHfToken;
+
+  /// URL where the user must accept the model license (for gated HF repos).
+  final String? licenseUrl;
+
+  /// URL where the user can create or copy their HuggingFace read token.
+  final String? tokenSetupUrl;
+
+  /// Human-readable step-by-step requirements if the model requires extra setup.
+  final List<String> requirementSteps;
+
   const LiteRtModelInfo({
     required this.id,
     required this.name,
@@ -25,6 +38,10 @@ class LiteRtModelInfo {
     required this.type,
     required this.downloadUrl,
     required this.sizeBytes,
+    this.requiresHfToken = false,
+    this.licenseUrl,
+    this.tokenSetupUrl,
+    this.requirementSteps = const [],
   });
 
   /// Human-readable file size (e.g. "1.5 GB", "30 MB").
@@ -36,103 +53,172 @@ class LiteRtModelInfo {
   }
 }
 
-/// A built-in catalog of recommended LiteRT and LiteRT-LM models for edge use.
+/// A built-in catalog of verified WebGPU / WASM models for browser edge execution.
 class LiteRtModelCatalog {
   LiteRtModelCatalog._();
 
+  static const String kHfTokensUrl = 'https://huggingface.co/settings/tokens';
+
   static const List<LiteRtModelInfo> all = [
-    // ── Chat (LiteRT-LM) ───────────────────────────────────────────────
-    //
-    // Gemma NO está en esta lista a propósito. Sus bundles `.task` en
-    // HuggingFace (google/gemma-3n-*, litert-community/Gemma3-*) están
-    // *gated*: responden 401 sin un token de HF y sin haber aceptado la
-    // licencia de Google. Un fetch desde el navegador no puede hacer eso,
-    // así que ofrecerlo aquí sería prometer una descarga que siempre falla.
-    //
-    // Estas dos URLs se verificaron con HEAD: 200, tamaño real, y cabecera
-    // CORS presente para origen local.
+    // ── 1. Chat (WebGPU directo — 100% libres, sin token) ──────────────
     LiteRtModelInfo(
       id: 'qwen25-05b',
-      name: 'Qwen2.5 0.5B Instruct',
-      description: 'Modelo de lenguaje ligero para chat y razonamiento local en el navegador. Descarga rápida.',
+      name: 'Qwen2.5 0.5B Instruct (WebGPU)',
+      description:
+          'Modelo multilingüe en español compilado para WebGPU (MLC q4f16). '
+          'Descarga ligera y respuesta fluida en el navegador sin enviar datos.',
       type: LiteRtModelType.chat,
-      downloadUrl:
-          'https://huggingface.co/litert-community/Qwen2.5-0.5B-Instruct/resolve/main/Qwen2.5-0.5B-Instruct_multi-prefill-seq_q8_ekv1280.task',
-      sizeBytes: 546000000, // 521 MB medidos
+      downloadUrl: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
+      sizeBytes: 278921216, // ~266 MB verificados en Chrome WebGPU
+    ),
+    LiteRtModelInfo(
+      id: 'smollm2-360m',
+      name: 'SmolLM2 360M Instruct (WebGPU)',
+      description:
+          'Modelo ultraligero para equipos con poca memoria de video (376 MB VRAM). '
+          'Ideal para pruebas rápidas en navegador.',
+      type: LiteRtModelType.chat,
+      downloadUrl: 'SmolLM2-360M-Instruct-q4f16_1-MLC',
+      sizeBytes: 199229440, // ~190 MB
+    ),
+    LiteRtModelInfo(
+      id: 'llama32-1b',
+      name: 'Llama 3.2 1B Instruct (WebGPU)',
+      description:
+          'Modelo compacto de Meta (1B parámetros, ventana 4K) acelerado por WebGPU.',
+      type: LiteRtModelType.chat,
+      downloadUrl: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',
+      sizeBytes: 660602880, // ~630 MB
     ),
     LiteRtModelInfo(
       id: 'qwen25-15b',
-      name: 'Qwen2.5 1.5B Instruct',
-      description: 'Modelo de lenguaje de mayor capacidad para chat local. Requiere más memoria de GPU.',
+      name: 'Qwen2.5 1.5B Instruct (WebGPU)',
+      description:
+          'Mayor capacidad de razonamiento y redacción en español (1.5B parámetros, '
+          'ventana 4K). Requiere ~1.6 GB de VRAM.',
+      type: LiteRtModelType.chat,
+      downloadUrl: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
+      sizeBytes: 922746880, // ~880 MB
+    ),
+
+    // ── 2. Chat Gated (Requieren aceptar licencia + Token HF) ──────────
+    LiteRtModelInfo(
+      id: 'gemma3-270m-web',
+      name: 'Gemma 3 270M IT (MediaPipe Web)',
+      description:
+          'Bundle oficial -web.task de Google para MediaPipe WebGPU. '
+          'Requiere aceptar la licencia de Gemma en HuggingFace y configurar un token de lectura (hf_...).',
       type: LiteRtModelType.chat,
       downloadUrl:
-          'https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv1280.task',
-      sizeBytes: 1598000000, // 1524 MB medidos
+          'https://huggingface.co/litert-community/gemma-3-270m-it/resolve/main/gemma3-270m-it-q8-web.task',
+      sizeBytes: 293601280, // ~280 MB
+      requiresHfToken: true,
+      licenseUrl: 'https://huggingface.co/litert-community/gemma-3-270m-it',
+      tokenSetupUrl: kHfTokensUrl,
+      requirementSteps: [
+        'Abre el repositorio en HuggingFace y acepta la licencia de uso de Google Gemma.',
+        'Genera un Access Token de tipo Read (empieza con hf_...) en tu cuenta de HuggingFace.',
+        'Pega tu token en el botón "Configurar Token HF" para desbloquear la descarga.',
+      ],
     ),
     LiteRtModelInfo(
-      id: 'embeddinggemma-2-740m',
-      name: 'EmbeddingGemma 2 (740M Multimodal)',
-      description: 'Embeddings multimodales nativos (texto, código, imágenes y audio) en el Edge con 8K contexto y MRL dinámico.',
+      id: 'gemma3-1b-web',
+      name: 'Gemma 3 1B IT (MediaPipe Web)',
+      description:
+          'Modelo Gemma 3 de 1B cuantizado a int4 específicamente para WebGPU (-web.task). '
+          'Requiere aceptar licencia en HuggingFace y token hf_...',
+      type: LiteRtModelType.chat,
+      downloadUrl:
+          'https://huggingface.co/litert-community/Gemma3-1B-IT/resolve/main/gemma3-1b-it-int4-web.task',
+      sizeBytes: 576716800, // ~550 MB
+      requiresHfToken: true,
+      licenseUrl: 'https://huggingface.co/litert-community/Gemma3-1B-IT',
+      tokenSetupUrl: kHfTokensUrl,
+      requirementSteps: [
+        'Abre el repositorio litert-community/Gemma3-1B-IT y acepta la licencia de Google.',
+        'Crea un token de lectura (Read) en HuggingFace Settings -> Access Tokens.',
+        'Guarda tu token hf_... aquí para autenticar la descarga desde el navegador.',
+      ],
+    ),
+
+    // ── 3. Embeddings Semánticos (WASM — MediaPipe Text Embedder) ──────
+    LiteRtModelInfo(
+      id: 'universal-sentence-encoder',
+      name: 'Universal Sentence Encoder (Multilingüe)',
+      description:
+          'Embeddings semánticos ultrarrápidos (100 dimensiones, L2-normalizados) '
+          'para memoria episódica y búsqueda por significado en el navegador.',
       type: LiteRtModelType.embeddings,
       downloadUrl:
-          'https://huggingface.co/litert-community/embeddinggemma-2-740m-litert-lm/resolve/main/embeddinggemma_2_740m.litertlm',
-      sizeBytes: 567000000, // ~567 MB multimodal completo (~191 MB text-only)
+          'https://storage.googleapis.com/mediapipe-models/text_embedder/universal_sentence_encoder/float32/1/universal_sentence_encoder.tflite',
+      sizeBytes: 6120274, // 6 MB verificados
     ),
     LiteRtModelInfo(
-      id: 'minilm-l6',
-      name: 'MiniLM-L6-v2 Embeddings',
-      description: 'Generación local de embeddings de texto de alto rendimiento para búsqueda semántica y base de datos vectorial privada.',
+      id: 'bert-embedder',
+      name: 'BERT Text Embedder (512 dims)',
+      description:
+          'Embeddings densos de mayor precisión basados en BERT (512 dimensiones, '
+          'con tokenizador WordPiece integrado en el bundle .tflite).',
       type: LiteRtModelType.embeddings,
-      downloadUrl: 'https://huggingface.co/collections/litert-community/minilm-l6-tflite',
-      sizeBytes: 30000000, // ~30 MB
+      downloadUrl:
+          'https://storage.googleapis.com/mediapipe-models/text_embedder/bert_embedder/float32/1/bert_embedder.tflite',
+      sizeBytes: 26142232, // 25 MB verificados
     ),
+    LiteRtModelInfo(
+      id: 'embeddinggemma-300m',
+      name: 'EmbeddingGemma 300M (LiteRT)',
+      description:
+          'Modelo de embeddings de Google (seq256, precisión mixta). '
+          'Requiere aceptar licencia en HuggingFace y token hf_...',
+      type: LiteRtModelType.embeddings,
+      downloadUrl:
+          'https://huggingface.co/litert-community/embeddinggemma-300m/resolve/main/embeddinggemma-300M_seq256_mixed-precision.tflite',
+      sizeBytes: 199229440, // ~190 MB
+      requiresHfToken: true,
+      licenseUrl: 'https://huggingface.co/litert-community/embeddinggemma-300m',
+      tokenSetupUrl: kHfTokensUrl,
+      requirementSteps: [
+        'Acepta la licencia del repositorio litert-community/embeddinggemma-300m en HuggingFace.',
+        'Genera un token de lectura (hf_...) en HuggingFace Settings -> Access Tokens.',
+        'Configura tu token hf_... para descargar y verificar el modelo.',
+      ],
+    ),
+
+    // ── 4. Visión por Computadora (WASM/WebGPU — MediaPipe Vision) ─────
     LiteRtModelInfo(
       id: 'mobilenet-v3',
-      name: 'MobileNet V3',
-      description: 'Clasificación de imágenes ultra-rápida y ligera para visión por computadora en el cliente.',
+      name: 'EfficientNet-Lite0 (Clasificador Visual)',
+      description:
+          'Clasificación de imágenes en tiempo real (1,000 categorías ImageNet) '
+          'ejecutándose 100% en el navegador vía MediaPipe Vision.',
       type: LiteRtModelType.vision,
-      downloadUrl: 'https://storage.googleapis.com/tensorflow/models/lite/model_tooling/v3/mobilenet_v3_large_100_224_2022_07_18.tflite',
-      sizeBytes: 16000000, // ~16 MB
+      downloadUrl:
+          'https://storage.googleapis.com/mediapipe-models/image_classifier/efficientnet_lite0/float32/1/efficientnet_lite0.tflite',
+      sizeBytes: 18582189, // 18 MB verificados
     ),
     LiteRtModelInfo(
-      id: 'yolov5-nano',
-      name: 'YOLOv5 Nano',
-      description: 'Detección y segmentación de objetos en tiempo real optimizado para webcams y cámaras.',
+      id: 'ssd-mobilenet-v2',
+      name: 'SSD MobileNet V2 (Detector de Objetos)',
+      description:
+          'Detección de múltiples objetos y cajas delimitadoras (80 clases COCO) '
+          'optimizado en float16 para cámaras y lienzos web.',
       type: LiteRtModelType.vision,
-      downloadUrl: 'https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n-fp16.tflite',
-      sizeBytes: 5000000, // ~5 MB
+      downloadUrl:
+          'https://storage.googleapis.com/mediapipe-models/object_detector/ssd_mobilenet_v2/float16/1/ssd_mobilenet_v2.tflite',
+      sizeBytes: 5918749, // 5.6 MB verificados
     ),
+
+    // ── 5. Audio (WASM — MediaPipe Audio Classifier) ───────────────────
     LiteRtModelInfo(
       id: 'yamnet',
-      name: 'YAMNet',
-      description: 'Clasificador de eventos acústicos en tiempo real capaz de predecir 521 eventos de sonido cotidianos.',
+      name: 'YAMNet (Clasificador Acústico 521 Eventos)',
+      description:
+          'Reconocimiento de 521 eventos acústicos (voz, música, alarmas, '
+          'naturaleza) a 16 kHz directamente en el navegador.',
       type: LiteRtModelType.audio,
-      downloadUrl: 'https://storage.googleapis.com/tfhub-lite-models/google/lite-model/yamnet/tflite/1.tflite',
-      sizeBytes: 15000000, // ~15 MB
-    ),
-    LiteRtModelInfo(
-      id: 'es_MX-claude-high',
-      name: 'Claude (LiteRT TTS)',
-      description: 'Modelo neural de síntesis de voz (Text-to-Speech) en español local para lectura y respuestas habladas en tiempo real.',
-      type: LiteRtModelType.tts,
-      downloadUrl: 'https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_MX/claude/high/es_MX-claude-high.tflite',
-      sizeBytes: 28000000, // ~28 MB
-    ),
-    LiteRtModelInfo(
-      id: 'matcha-tts',
-      name: 'Matcha-TTS',
-      description: 'Modelo local FFT-free acelerado por GPU diseñado para inferencia de síntesis de voz en el navegador.',
-      type: LiteRtModelType.tts,
-      downloadUrl: 'https://huggingface.co/collections/litert-community/matcha-tts-tflite',
-      sizeBytes: 25000000, // ~25 MB
-    ),
-    LiteRtModelInfo(
-      id: 'kokoro-82m',
-      name: 'Kokoro-82M',
-      description: 'Sintetizador de voz local multi-etapa (StyleTTS2 + ISTFTNet) de alta calidad optimizado para ejecuciones offline.',
-      type: LiteRtModelType.tts,
-      downloadUrl: 'https://huggingface.co/collections/litert-community/kokoro-82m-tflite',
-      sizeBytes: 82000000, // ~82 MB
+      downloadUrl:
+          'https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite',
+      sizeBytes: 4126810, // 4 MB verificados
     ),
     // ── Modelos Ultra-Ligeros Embebidos (codebase_ia: KittenTTS, Audio8, Needle 3, Whistle) ──
     LiteRtModelInfo(

@@ -23,8 +23,12 @@ abstract class SaiaLiteRtService {
   /// [moduleUrl] apunta al paquete de MediaPipe GenAI si no está precargado.
   Future<void> loadLiteRtLm({String? moduleUrl});
 
-  /// Loads and compiles a `.litertlm` language model.
-  Future<LiteRtLmModel> loadLmModel(String modelPath, {String accelerator = 'gpu'});
+  /// Loads and compiles a language model (WebLLM MLC ID or MediaPipe `.task` URL).
+  Future<LiteRtLmModel> loadLmModel(
+    String modelPath, {
+    String accelerator = 'gpu',
+    void Function(String status, double progress)? onProgress,
+  });
 
   /// Carga un embebedor de texto desde un `.tflite` con metadatos de
   /// tokenizador (los de MediaPipe Text Embedder).
@@ -36,4 +40,17 @@ abstract class SaiaLiteRtService {
     String modelPath, {
     bool l2Normalize = true,
   });
+
+  /// Carga y verifica en vivo un modelo `.tflite` de visión (ImageClassifier
+  /// u ObjectDetector de MediaPipe Vision) y devuelve el diagnóstico real.
+  Future<String> verifyVisionModel(String modelPath);
+
+  /// Carga y verifica en vivo un modelo `.tflite` de audio (AudioClassifier
+  /// de MediaPipe Audio, p. ej. YAMNet) con un tono de prueba a 16 kHz.
+  Future<String> verifyAudioModel(String modelPath);
+
+  /// Token opcional de HuggingFace (`hf_...`) para descargar modelos *gated*
+  /// (como Gemma 3 `-web.task` o EmbeddingGemma).
+  String? get huggingFaceToken;
+  void setHuggingFaceToken(String? token);
 }

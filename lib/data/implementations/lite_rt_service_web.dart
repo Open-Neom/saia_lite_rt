@@ -57,33 +57,22 @@ extension type _JsLiteRtModel._(JSObject _) implements JSObject {
 }
 
 // ==========================================
-// Generative LLM (@mediapipe/tasks-genai) JS Bindings
+// MediaPipe Tasks (Text, Vision, Audio, GenAI)
 // ==========================================
-//
-// NO se usa `@litert-lm/core`. Ese paquete existe en npm pero su tarball
-// contiene solo `package.json`: promete `main: ./dist/index.js` y
-// `files: [dist/**, wasm/**]`, y no publica ninguno de los dos. Su endpoint
-// `+esm` devuelve 404, así que cualquier `import()` contra él falla con
-// "Failed to fetch dynamically imported module".
-//
-// MediaPipe LLM Inference es la vía publicada de Google para ejecutar
-// bundles `.task` en el navegador, y consume exactamente los mismos
-// archivos (los de litert-community en HuggingFace). Firmas verificadas
-// contra `genai.d.ts` de @mediapipe/tasks-genai@0.10.29.
 
-/// Versión fijada de `@mediapipe/tasks-text`, que trae el Text Embedder.
-///
-/// Fijada por la misma razón que la de genai: sin versión, el módulo ESM y
-/// el runtime WASM se resuelven por separado contra `latest` y pueden
-/// quedar desincronizados a mitad de una publicación.
-const String kMediaPipeTextVersion = '1.0.1';
+/// Versión verificada en npm/jsdelivr para `@mediapipe/tasks-text`,
+/// `@mediapipe/tasks-vision` y `@mediapipe/tasks-audio`.
+const String kMediaPipeTasksVersion = '0.10.21';
 
 const String _mpTextBase =
-    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-text@$kMediaPipeTextVersion';
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-text@$kMediaPipeTasksVersion';
+const String _mpVisionBase =
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@$kMediaPipeTasksVersion';
+const String _mpAudioBase =
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-audio@$kMediaPipeTasksVersion';
 
 @JS()
 extension type _MpTextFilesetResolver._(JSObject _) implements JSObject {
-  /// `static forTextTasks(basePath?): Promise<WasmFileset>`
   external JSPromise<JSObject> forTextTasks([JSString? basePath]);
 }
 
@@ -97,32 +86,11 @@ extension type _MpTextEmbedderConstructor._(JSObject _) implements JSObject {
 
 @JS()
 extension type _MpTextEmbedder._(JSObject _) implements JSObject {
-  /// `embed(text): TextEmbedderResult` — síncrono, no devuelve Promise.
   external JSObject embed(JSString text);
-
   external void close();
 }
 
-/// Versión fijada de `@mediapipe/tasks-genai`.
-///
-/// **Fijada a propósito, y a una RC a propósito.**
-///
-/// El tag `latest` apunta a `0.10.29`, y esa versión falla al compilar los
-/// bundles `.task` de litert-community en WebGPU:
-///
-///   llm_litert_webgpu_executor.cc:407
-///   interpreter->ModifyGraphWithDelegate(gpu_delegate.get()) == kTfLiteOk
-///
-/// El delegado rechaza el grafo por operaciones que no soporta. LiteRT
-/// upstream lleva meses añadiéndolas al backend WebGPU (Slice,
-/// ResizeBilinear, DepthwiseConv2D…), y esos avances salen en la línea
-/// `1.0.1-rc`, que se publica a diario. Verificado que la RC mantiene la
-/// misma API: mismos exports y `createFromOptions` / `delegate` /
-/// `maxTokens` sin cambios.
-///
-/// Sin fijar versión había un riesgo peor que usar una RC: el módulo ESM y
-/// el runtime WASM se resolvían por separado contra `latest`, y podían
-/// quedar desincronizados entre sí a mitad de una publicación.
+/// Versión de `@mediapipe/tasks-genai` para modelos `.task` 4D (`-web.task`).
 const String kMediaPipeGenAiVersion = '1.0.1-rc.20260902';
 
 const String _mpBase =
@@ -130,13 +98,11 @@ const String _mpBase =
 
 @JS()
 extension type _MpFilesetResolver._(JSObject _) implements JSObject {
-  /// `static forGenAiTasks(basePath?, useModule?): Promise<WasmFileset>`
   external JSPromise<JSObject> forGenAiTasks([JSString? basePath]);
 }
 
 @JS()
 extension type _MpLlmInferenceConstructor._(JSObject _) implements JSObject {
-  /// `static createFromOptions(wasmFileset, options): Promise<LlmInference>`
   external JSPromise<_MpLlmInference> createFromOptions(
     JSObject wasmFileset,
     JSObject options,
@@ -145,10 +111,6 @@ extension type _MpLlmInferenceConstructor._(JSObject _) implements JSObject {
 
 @JS()
 extension type _MpLlmInference._(JSObject _) implements JSObject {
-  /// `generateResponse(query, progressListener?): Promise<string>`
-  ///
-  /// El listener recibe `(partialResult, done)` — es el streaming real; el
-  /// Promise resuelve con el texto completo al terminar.
   external JSPromise<JSString> generateResponse(
     JSString query,
     JSFunction progressListener,
@@ -162,6 +124,31 @@ extension type _MpLlmInference._(JSObject _) implements JSObject {
 // ==========================================
 
 class WebLiteRtService implements SaiaLiteRtService {
+  static const String _hfTokenStorageKey = 'saia_hf_token';
+
+  @override
+  String? get huggingFaceToken {
+    try {
+      final raw = web.window.localStorage.getItem(_hfTokenStorageKey);
+      if (raw == null || raw.trim().isEmpty) return null;
+      return raw.trim();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  void setHuggingFaceToken(String? token) {
+    try {
+      final clean = token?.trim() ?? '';
+      if (clean.isEmpty) {
+        web.window.localStorage.removeItem(_hfTokenStorageKey);
+      } else {
+        web.window.localStorage.setItem(_hfTokenStorageKey, clean);
+      }
+    } catch (_) {}
+  }
+
   @override
   Future<void> loadLiteRt({String? wasmPath}) async {
     if (web.window.has('__saia_litert_wasm_loaded')) return;
@@ -170,14 +157,18 @@ class WebLiteRtService implements SaiaLiteRtService {
     web.window.setProperty('__saia_litert_wasm_loading'.toJS, true.toJS);
     try {
       if (!web.window.has('loadLiteRt')) {
-        await _loadModuleScriptGeneral('https://cdn.jsdelivr.net/npm/@litertjs/core/+esm');
+        await _loadModuleScriptGeneral(
+          'https://cdn.jsdelivr.net/npm/@litertjs/core/+esm',
+        );
       }
-      final wasmUrl = wasmPath ?? 'https://cdn.jsdelivr.net/npm/@litertjs/core/wasm/';
+      final wasmUrl =
+          wasmPath ?? 'https://cdn.jsdelivr.net/npm/@litertjs/core/wasm/';
       await _jsLoadLiteRt(wasmUrl.toJS).toDart;
       web.window.setProperty('__saia_litert_wasm_loaded'.toJS, true.toJS);
     } catch (e) {
       final errStr = e.toString().toLowerCase();
-      if (errStr.contains('already loading') || errStr.contains('already loaded')) {
+      if (errStr.contains('already loading') ||
+          errStr.contains('already loaded')) {
         web.window.setProperty('__saia_litert_wasm_loaded'.toJS, true.toJS);
         return;
       }
@@ -188,7 +179,10 @@ class WebLiteRtService implements SaiaLiteRtService {
   }
 
   @override
-  Future<LiteRtModel> loadModel(String modelPath, {String accelerator = 'webgpu'}) async {
+  Future<LiteRtModel> loadModel(
+    String modelPath, {
+    String accelerator = 'webgpu',
+  }) async {
     final options = _JsLiteRtOptions(accelerator: accelerator.toJS);
     final jsModel = await _jsLoadAndCompile(modelPath.toJS, options).toDart;
     return LiteRtModelWeb(jsModel);
@@ -201,9 +195,6 @@ class WebLiteRtService implements SaiaLiteRtService {
       if (!nav.has('gpu')) return false;
       final gpu = nav.getProperty('gpu'.toJS);
       if (gpu == null || !gpu.isA<JSObject>()) return false;
-      // Tener `navigator.gpu` no basta: puede existir y no devolver
-      // adaptador (GPU bloqueada, driver en lista negra, VM sin
-      // aceleración). Lo que importa es si hay adaptador.
       final adapter = await (gpu as JSObject)
           .callMethod<JSPromise<JSAny?>>('requestAdapter'.toJS)
           .toDart;
@@ -215,17 +206,208 @@ class WebLiteRtService implements SaiaLiteRtService {
 
   @override
   Future<void> loadLiteRtLm({String? moduleUrl}) async {
-    if (web.window.has('__saia_mp_LlmInference')) return;
+    if (moduleUrl != null) {
+      await _loadModuleScript(moduleUrl);
+      return;
+    }
+    // Por defecto aseguramos el helper JS para WebLLM y MediaPipe.
+    _ensureWebAiHelper();
+  }
 
-    final loaderUrl =
-        moduleUrl ?? '$_mpBase/+esm';
-    await _loadModuleScript(loaderUrl);
+  /// Inyecta un helper JS en `window.__saiaWebAi` que gestiona:
+  /// - Carga de `@mlc-ai/web-llm` (modelos abiertos Qwen 2.5, SmolLM2, Llama 3.2)
+  /// - Descarga autenticada con `Authorization: Bearer hf_...` para modelos
+  ///   gated de Hugging Face (Gemma 3 `-web.task`, EmbeddingGemma)
+  /// - Verificación real de modelos de Visión (`@mediapipe/tasks-vision`)
+  ///   y Audio (`@mediapipe/tasks-audio`)
+  void _ensureWebAiHelper() {
+    if (web.window.has('__saiaWebAi')) return;
+    final script = web.HTMLScriptElement();
+    script.text = r'''
+window.__saiaWebAi = {
+  _webllmMod: null,
+  _engines: {},
+
+  async ensureWebLlm() {
+    if (!this._webllmMod) {
+      this._webllmMod = await import('https://esm.run/@mlc-ai/web-llm');
+    }
+    return this._webllmMod;
+  },
+
+  async createWebLlmEngine(modelId, onProgress) {
+    const webllm = await this.ensureWebLlm();
+    if (this._engines[modelId]) {
+      return this._engines[modelId];
+    }
+    const engine = await webllm.CreateMLCEngine(modelId, {
+      initProgressCallback: (report) => {
+        if (onProgress) {
+          const text = report && report.text ? String(report.text) : 'Cargando...';
+          const prog = report && typeof report.progress === 'number' ? report.progress : 0;
+          onProgress(text, prog);
+        }
+      },
+    });
+    this._engines[modelId] = engine;
+    return engine;
+  },
+
+  async streamWebLlm(engine, prompt, maxTokens, temp, topP, onChunk) {
+    const messages = [];
+    const regex = /<\|im_start\|>(\w+)\n([\s\S]*?)(?:<\|im_end\|>|$)/g;
+    let match;
+    while ((match = regex.exec(prompt)) !== null) {
+      const role = match[1].trim();
+      const content = match[2].trim();
+      if ((role === 'system' || role === 'user' || role === 'assistant') && content.length > 0) {
+        messages.push({ role, content });
+      }
+    }
+    if (messages.length === 0) {
+      messages.push({ role: 'user', content: prompt.trim() });
+    }
+    const chunks = await engine.chat.completions.create({
+      messages,
+      max_tokens: maxTokens || 512,
+      temperature: typeof temp === 'number' ? temp : 0.4,
+      top_p: typeof topP === 'number' ? topP : 0.9,
+      stream: true,
+    });
+    let full = '';
+    for await (const chunk of chunks) {
+      const delta = chunk.choices?.[0]?.delta?.content || '';
+      if (delta) {
+        full += delta;
+        if (onChunk) onChunk(delta);
+      }
+    }
+    return full;
+  },
+
+  async fetchWithHfToken(url, token, onProgress) {
+    const headers = {};
+    if (token && token.trim().length > 0) {
+      headers['Authorization'] = 'Bearer ' + token.trim();
+    }
+    const res = await fetch(url, { headers });
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(
+        'HTTP ' + res.status + ': Acceso restringido en Hugging Face. ' +
+        'Sigue los pasos de la tarjeta: (1) Acepta la licencia en Hugging Face y ' +
+        '(2) Configura tu Token HF (hf_...) arriba.'
+      );
+    }
+    if (!res.ok) {
+      throw new Error('HTTP ' + res.status + ' descargando ' + url);
+    }
+    const total = Number(res.headers.get('content-length') || 0);
+    if (!res.body || !res.body.getReader) {
+      const blob = await res.blob();
+      return URL.createObjectURL(blob);
+    }
+    const reader = res.body.getReader();
+    const parts = [];
+    let loaded = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+      loaded += value.byteLength;
+      if (onProgress && total > 0) {
+        onProgress('Descargando (' + Math.round((loaded / 1048576) * 10) / 10 + ' MB)...', loaded / total);
+      }
+    }
+    const blob = new Blob(parts, { type: 'application/octet-stream' });
+    return URL.createObjectURL(blob);
+  },
+
+  async verifyVision(modelUrl, mpVisionBase) {
+    const t0 = performance.now();
+    const mod = await import(mpVisionBase + '/+esm');
+    const fileset = await mod.FilesetResolver.forVisionTasks(mpVisionBase + '/wasm');
+    const canvas = document.createElement('canvas');
+    canvas.width = 224;
+    canvas.height = 224;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#87CEEB';
+    ctx.fillRect(0, 0, 224, 224);
+    ctx.fillStyle = '#228B22';
+    ctx.fillRect(0, 160, 224, 64);
+    ctx.fillStyle = '#FF4500';
+    ctx.beginPath();
+    ctx.arc(112, 112, 48, 0, Math.PI * 2);
+    ctx.fill();
+
+    const isDetector = modelUrl.toLowerCase().includes('ssd') || modelUrl.toLowerCase().includes('detect');
+    if (isDetector) {
+      const detector = await mod.ObjectDetector.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: modelUrl },
+        scoreThreshold: 0.1,
+      });
+      const res = detector.detect(canvas);
+      detector.close();
+      const dt = Math.round(performance.now() - t0);
+      const count = res?.detections?.length || 0;
+      const top = res?.detections?.[0]?.categories?.[0];
+      const topDesc = top
+        ? top.categoryName + ' (' + (top.score * 100).toFixed(1) + '%)'
+        : 'Escena sintética procesada (0 objetos sobre umbral)';
+      return 'ObjectDetector activo (' + dt + ' ms) · Detecciones: ' + count + ' · ' + topDesc;
+    } else {
+      const classifier = await mod.ImageClassifier.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: modelUrl },
+        maxResults: 3,
+      });
+      const res = classifier.classify(canvas);
+      classifier.close();
+      const dt = Math.round(performance.now() - t0);
+      const cats = res?.classifications?.[0]?.categories || [];
+      const summary = cats
+        .slice(0, 3)
+        .map(c => (c.categoryName || c.displayName || 'clase #' + c.index) + ' (' + (c.score * 100).toFixed(1) + '%)')
+        .join(', ');
+      return 'ImageClassifier activo (' + dt + ' ms) · Top: ' + (summary || 'OK');
+    }
+  },
+
+  async verifyAudio(modelUrl, mpAudioBase) {
+    const t0 = performance.now();
+    const mod = await import(mpAudioBase + '/+esm');
+    const fileset = await mod.FilesetResolver.forAudioTasks(mpAudioBase + '/wasm');
+    const classifier = await mod.AudioClassifier.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: modelUrl },
+      maxResults: 3,
+    });
+    const sampleRate = 16000;
+    const samples = new Float32Array(sampleRate);
+    for (let i = 0; i < sampleRate; i++) {
+      samples[i] = 0.5 * Math.sin(2 * Math.PI * 440 * (i / sampleRate));
+    }
+    const res = classifier.classify(samples, sampleRate);
+    classifier.close();
+    const dt = Math.round(performance.now() - t0);
+    const cats = res?.[0]?.classifications?.[0]?.categories || [];
+    const summary = cats
+      .slice(0, 3)
+      .map(c => (c.categoryName || c.displayName || 'clase #' + c.index) + ' (' + (c.score * 100).toFixed(1) + '%)')
+      .join(', ');
+    return 'AudioClassifier YAMNet activo (' + dt + ' ms) · Señal 440 Hz → ' + (summary || 'OK');
+  }
+};
+''';
+    (web.document.head ?? web.document.body)?.append(script);
+  }
+
+  JSObject get _webAiHelper {
+    _ensureWebAiHelper();
+    return web.window.getProperty<JSObject>('__saiaWebAi'.toJS);
   }
 
   Future<void> _loadModuleScript(String moduleUrl) async {
     final completer = Completer<void>();
     const callbackName = '__saia_litert_lm_init';
-    
+
     web.window.setProperty(
       callbackName.toJS,
       (JSAny? err) {
@@ -278,7 +460,7 @@ class WebLiteRtService implements SaiaLiteRtService {
 
     web.document.head?.append(script);
     try {
-      await completer.future.timeout(const Duration(seconds: 15));
+      await completer.future.timeout(const Duration(seconds: 20));
     } finally {
       web.window.delete(callbackName.toJS);
     }
@@ -287,7 +469,7 @@ class WebLiteRtService implements SaiaLiteRtService {
   Future<void> _loadModuleScriptGeneral(String moduleUrl) async {
     final completer = Completer<void>();
     const callbackName = '__saia_litert_core_init';
-    
+
     web.window.setProperty(
       callbackName.toJS,
       (JSAny? err) {
@@ -394,21 +576,93 @@ class WebLiteRtService implements SaiaLiteRtService {
     }
   }
 
-  /// Deduce el tope de tokens del nombre del bundle.
-  ///
-  /// Los `.task` de litert-community codifican su caché KV como `ekv<N>`
-  /// (p. ej. `…_q8_ekv1280.task`). Si no aparece, se usa un valor
-  /// conservador: pasarse hace fallar la creación del engine, quedarse
-  /// corto solo acorta la conversación.
   static int _maxTokensFor(String modelPath) {
     final match = RegExp(r'ekv(\d+)').firstMatch(modelPath);
     final declared = match == null ? null : int.tryParse(match.group(1)!);
     return declared ?? 1024;
   }
 
+  /// Normaliza rutas antiguas `.task` 5D (Qwen2.5 de Android) a sus
+  /// equivalentes funcionales en WebLLM (`-MLC`).
+  static String _normalizeLmModelPath(String modelPath) {
+    if (modelPath.contains('Qwen2.5-0.5B-Instruct') &&
+        modelPath.endsWith('.task')) {
+      return 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC';
+    }
+    if (modelPath.contains('Qwen2.5-1.5B-Instruct') &&
+        modelPath.endsWith('.task')) {
+      return 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC';
+    }
+    return modelPath;
+  }
+
+  static bool _isTaskBundleUrl(String modelPath) {
+    final lower = modelPath.toLowerCase();
+    return lower.endsWith('.task') ||
+        lower.endsWith('.bin') ||
+        lower.startsWith('http://') ||
+        lower.startsWith('https://') ||
+        lower.startsWith('blob:');
+  }
+
+  Future<String> _resolveAuthenticatedUrlIfNeeded(
+    String url, {
+    void Function(String status, double progress)? onProgress,
+  }) async {
+    if (!url.contains('huggingface.co')) return url;
+    final token = huggingFaceToken;
+    // Si es un repo de litert-community gated (Gemma) o si hay token HF,
+    // descargamos con fetch + Authorization header y creamos un Blob URL.
+    final isGated = url.toLowerCase().contains('gemma');
+    if (!isGated && (token == null || token.isEmpty)) {
+      return url;
+    }
+    if (isGated && (token == null || token.isEmpty)) {
+      throw StateError(
+        'Este modelo de Hugging Face requiere licencia aceptada y un Token HF (hf_...). '
+        'Sigue los pasos indicados en la tarjeta del modelo para configurarlo.',
+      );
+    }
+    final progressCb = ((JSString status, JSNumber prog) {
+      onProgress?.call(status.toDart, prog.toDartDouble);
+    }).toJS;
+    final blobUrl = await (_webAiHelper.callMethod(
+      'fetchWithHfToken'.toJS,
+      url.toJS,
+      (token ?? '').toJS,
+      progressCb,
+    ) as JSPromise<JSString>)
+        .toDart;
+    return blobUrl.toDart;
+  }
+
   @override
-  Future<LiteRtLmModel> loadLmModel(String modelPath,
-      {String accelerator = 'gpu'}) async {
+  Future<LiteRtLmModel> loadLmModel(
+    String modelPath, {
+    String accelerator = 'gpu',
+    void Function(String status, double progress)? onProgress,
+  }) async {
+    final normalized = _normalizeLmModelPath(modelPath);
+
+    // 1. Vía WebLLM (modelos abiertos pre-compilados para WebGPU: Qwen2.5, SmolLM2, Llama 3.2)
+    if (!_isTaskBundleUrl(normalized)) {
+      final progressCb = ((JSString status, JSNumber prog) {
+        onProgress?.call(status.toDart, prog.toDartDouble);
+      }).toJS;
+      final engine = await (_webAiHelper.callMethod(
+        'createWebLlmEngine'.toJS,
+        normalized.toJS,
+        progressCb,
+      ) as JSPromise<JSObject>)
+          .toDart;
+      return WebLlmModelWeb(_webAiHelper, engine, backend: 'WebGPU (MLC)');
+    }
+
+    // 2. Vía MediaPipe Tasks GenAI (bundles `.task` 4D como `gemma3-270m-it-q8-web.task`)
+    if (!web.window.has('__saia_mp_LlmInference')) {
+      await _loadModuleScript('$_mpBase/+esm');
+    }
+
     final rawLlm = web.window.getProperty('__saia_mp_LlmInference'.toJS);
     final rawFileset = web.window.getProperty('__saia_mp_FilesetResolver'.toJS);
     if (rawLlm == null ||
@@ -420,60 +674,31 @@ class WebLiteRtService implements SaiaLiteRtService {
       );
     }
 
-    // El fileset resuelve el runtime WASM (~26 MB, cacheado por el
-    // navegador tras la primera vez).
+    final resolvedAssetPath = await _resolveAuthenticatedUrlIfNeeded(
+      normalized,
+      onProgress: onProgress,
+    );
+
     final resolver = _MpFilesetResolver._(rawFileset as JSObject);
-    final fileset = await resolver
-        .forGenAiTasks(
-          '$_mpBase/wasm'.toJS,
-        )
-        .toDart;
+    final fileset = await resolver.forGenAiTasks('$_mpBase/wasm'.toJS).toDart;
 
     final baseOptions = JSObject();
-    baseOptions.setProperty('modelAssetPath'.toJS, modelPath.toJS);
+    baseOptions.setProperty('modelAssetPath'.toJS, resolvedAssetPath.toJS);
 
     final options = JSObject();
     options.setProperty('baseOptions'.toJS, baseOptions);
-    // MediaPipe fija el sampling al CREAR el modelo, no por generación
-    // (ver LlmInferenceOptions en genai.d.ts). Estos son los topes; los
-    // valores por llamada de generateStream no pueden cambiarlos sin
-    // reconstruir el modelo, y reconstruirlo implica recompilar en GPU.
-    //
-    // `maxTokens` NO puede exceder la caché KV con la que se compiló el
-    // bundle, o la creación del engine falla con:
-    //   "Max number of tokens is larger than the maximum cache size
-    //    supported: 2048 > 1280"
-    // Los bundles de litert-community lo llevan en el nombre (`…ekv1280`),
-    // así que se lee de ahí en vez de asumirlo.
-    options.setProperty('maxTokens'.toJS, _maxTokensFor(modelPath).toJS);
+    options.setProperty('maxTokens'.toJS, _maxTokensFor(normalized).toJS);
     options.setProperty('topK'.toJS, 40.toJS);
     options.setProperty('temperature'.toJS, 0.4.toJS);
 
     final constructor = _MpLlmInferenceConstructor._(rawLlm as JSObject);
-
-    // ⚠ NO HAY CAMINO POR CPU PARA LLM EN WEB.
-    //
-    // Aquí había un reintento con `delegate: 'CPU'` documentado como «CPU sí
-    // lo ejecuta — más lento, pero funciona». Se midió y es falso: pasando
-    // `delegate: 'CPU'` en `baseOptions`, MediaPipe devuelve el error
-    // IDÉNTICO de WebGPU —`llm_litert_webgpu_executor.cc:407`— así que la
-    // opción se ignora y la inferencia de LLM en navegador solo tiene ruta
-    // de GPU. Comprobado con `@mediapipe/tasks-genai@1.0.1-rc.20260904` en
-    // un arnés de 30 líneas, fuera de Itzli.
-    //
-    // El reintento no era inofensivo: descargaba el bundle otra vez, tardaba
-    // el doble y terminaba mostrando el mismo error, dando a entender que se
-    // había intentado algo distinto.
     baseOptions.setProperty('delegate'.toJS, 'GPU'.toJS);
     try {
       final llm = await constructor.createFromOptions(fileset, options).toDart;
-      return LiteRtLmModelWeb(llm, backend: 'GPU');
+      return LiteRtLmModelWeb(llm, backend: 'WebGPU (LiteRT .task)');
     } catch (e) {
       if (!_isDelegateRejection(e)) rethrow;
-      // Rechazo del delegado: el grafo del bundle usa operaciones que el
-      // backend WebGPU no implementa. Se traduce a algo accionable en vez
-      // de propagar 300 caracteres de traza de C++.
-      throw LiteRtBundleIncompatible(modelPath, e.toString());
+      throw LiteRtBundleIncompatible(normalized, e.toString());
     }
   }
 
@@ -496,28 +721,48 @@ class WebLiteRtService implements SaiaLiteRtService {
       throw StateError('MediaPipe Text no expuso TextEmbedder.');
     }
 
+    final resolvedAssetPath = await _resolveAuthenticatedUrlIfNeeded(modelPath);
+
     final resolver = _MpTextFilesetResolver._(rawFileset as JSObject);
     final fileset =
         await resolver.forTextTasks('$_mpTextBase/wasm'.toJS).toDart;
 
     final baseOptions = JSObject();
-    baseOptions.setProperty('modelAssetPath'.toJS, modelPath.toJS);
+    baseOptions.setProperty('modelAssetPath'.toJS, resolvedAssetPath.toJS);
 
     final options = JSObject();
     options.setProperty('baseOptions'.toJS, baseOptions);
-    // Norma 1: convierte el producto interno en similitud coseno, que es
-    // como compara saia_turbovec.
     options.setProperty('l2Normalize'.toJS, l2Normalize.toJS);
-    // Sin cuantizar: se quiere el vector float, no bytes escalados.
     options.setProperty('quantize'.toJS, false.toJS);
 
     final constructor = _MpTextEmbedderConstructor._(rawEmbedder as JSObject);
-    final embedder = await constructor.createFromOptions(fileset, options).toDart;
+    final embedder =
+        await constructor.createFromOptions(fileset, options).toDart;
     return LiteRtTextEmbedderWeb(embedder);
   }
 
-  /// Distingue "el delegado de GPU rechazó este modelo" de cualquier otro
-  /// fallo, para no reintentar a ciegas.
+  @override
+  Future<String> verifyVisionModel(String modelPath) async {
+    final res = await (_webAiHelper.callMethod(
+      'verifyVision'.toJS,
+      modelPath.toJS,
+      _mpVisionBase.toJS,
+    ) as JSPromise<JSString>)
+        .toDart;
+    return res.toDart;
+  }
+
+  @override
+  Future<String> verifyAudioModel(String modelPath) async {
+    final res = await (_webAiHelper.callMethod(
+      'verifyAudio'.toJS,
+      modelPath.toJS,
+      _mpAudioBase.toJS,
+    ) as JSPromise<JSString>)
+        .toDart;
+    return res.toDart;
+  }
+
   static bool _isDelegateRejection(Object e) {
     final s = e.toString();
     return s.contains('ModifyGraphWithDelegate') ||
@@ -526,18 +771,6 @@ class WebLiteRtService implements SaiaLiteRtService {
   }
 }
 
-/// El bundle no es compatible con el backend WebGPU de este runtime.
-///
-/// Pasa cuando el `.task` se convirtió con una versión de `ai-edge-torch`
-/// que emite operaciones que el delegado no implementa. El síntoma en la
-/// consola es concreto:
-///
-///   RESHAPE: Tensor dimensions must be less than 5
-///     …CausalSelfAttention_atten_func
-///   ModifyGraphWithDelegate(gpu_delegate.get()) == kTfLiteOk (1 vs. 0)
-///
-/// No se arregla desde Itzli: hace falta un bundle convertido con una
-/// versión compatible. Y no hay ruta por CPU a la que caer.
 class LiteRtBundleIncompatible implements Exception {
   final String modelPath;
   final String detalle;
@@ -546,10 +779,10 @@ class LiteRtBundleIncompatible implements Exception {
 
   @override
   String toString() =>
-      'El backend WebGPU rechazó este modelo: su grafo usa operaciones que '
-      'esta versión de MediaPipe no implementa. No es falta de memoria ni de '
-      'GPU, y no hay modo CPU para LLM en navegador. Hace falta un bundle '
-      '.task compatible.\n\nModelo: ${modelPath.split("/").last}';
+      'El backend WebGPU rechazó este modelo: su grafo usa operaciones 5D '
+      'que el delegado WebGPU de MediaPipe no implementa. Usa los modelos '
+      'WebLLM (Qwen 2.5 / SmolLM2 / Llama 3.2) o los bundles -web.task de Gemma 3.\n\n'
+      'Modelo: ${modelPath.split("/").last}';
 }
 
 // ==========================================
@@ -589,8 +822,6 @@ class LiteRtTextEmbedderWeb implements LiteRtTextEmbedder {
 
   LiteRtTextEmbedderWeb(this._embedder);
 
-  /// Se conoce tras el primer [embed]: MediaPipe no publica el ancho antes
-  /// de vectorizar algo. 0 significa "aún no se sabe", no "modelo roto".
   @override
   int get dimensions => _dimensions;
 
@@ -598,29 +829,14 @@ class LiteRtTextEmbedderWeb implements LiteRtTextEmbedder {
   Float32List embed(String text) {
     final result = _embedder.embed(text.toJS);
 
-    // TextEmbedderResult.embeddings[0].floatEmbedding
-    final embeddings = result.getProperty<JSArray<JSObject>?>('embeddings'.toJS);
+    final embeddings =
+        result.getProperty<JSArray<JSObject>?>('embeddings'.toJS);
     if (embeddings == null || embeddings.length == 0) {
       return Float32List(0);
     }
     final first = embeddings.toDart[0];
-
-    // MediaPipe devuelve `floatEmbedding` como array JS PLANO (`number[]`),
-    // no como `Float32Array`. Leerlo como `JSFloat32Array` lanzaba
-    //
-    //   type 'List<dynamic>' is not a subtype of type 'NativeFloat32List?'
-    //
-    // y el proveedor entero caía al `catch`: los embeddings semánticos en web
-    // NUNCA cargaban y la memoria se quedaba en el vectorizador léxico, que
-    // halla duplicados pero no sinónimos. Sin error visible — el fallback
-    // seguía respondiendo.
-    //
-    // Se lee como array genérico y se convierte elemento a elemento, que
-    // funciona con las dos formas por si una versión devuelve tipado.
     final crudo = first.getProperty<JSAny?>('floatEmbedding'.toJS);
     if (crudo == null) {
-      // Ocurre si el embebedor se configuró con `quantize: true`, que aquí
-      // no se hace. Devolver vacío en vez de inventar un vector.
       return Float32List(0);
     }
 
@@ -645,9 +861,94 @@ class LiteRtTextEmbedderWeb implements LiteRtTextEmbedder {
   void dispose() {
     try {
       _embedder.close();
-    } catch (_) {
-      // close() es síncrono y puede lanzar si el runtime ya se fue.
+    } catch (_) {}
+  }
+}
+
+/// Wrapper sobre un motor `@mlc-ai/web-llm` compilado en WebGPU.
+class WebLlmModelWeb implements LiteRtLmModel {
+  final JSObject _helper;
+  final JSObject _engine;
+  bool _busy = false;
+
+  @override
+  final String backend;
+
+  WebLlmModelWeb(this._helper, this._engine, {required this.backend});
+
+  @override
+  Stream<String> generateStream(
+    String prompt, {
+    int maxTokens = 512,
+    double temp = 0.4,
+    double topP = 0.9,
+    int topK = 40,
+    int? seed,
+  }) {
+    final controller = StreamController<String>();
+    _runGeneration(controller, prompt, maxTokens, temp, topP);
+    return controller.stream;
+  }
+
+  Future<void> _runGeneration(
+    StreamController<String> controller,
+    String prompt,
+    int maxTokens,
+    double temp,
+    double topP,
+  ) async {
+    if (_busy) {
+      controller.addError(
+        StateError('Ya hay una generación en curso en este modelo.'),
+      );
+      await controller.close();
+      return;
     }
+    _busy = true;
+    var emitted = 0;
+    try {
+      final onChunk = ((JSString delta) {
+        final text = delta.toDart;
+        if (text.isNotEmpty && !controller.isClosed) {
+          controller.add(text);
+          emitted += text.length;
+        }
+      }).toJS;
+
+      final full = await (_helper.callMethodVarArgs(
+        'streamWebLlm'.toJS,
+        [
+          _engine,
+          prompt.toJS,
+          maxTokens.toJS,
+          temp.toJS,
+          topP.toJS,
+          onChunk,
+        ],
+      ) as JSPromise<JSString>)
+          .toDart;
+
+      if (emitted == 0) {
+        final text = full.toDart;
+        if (text.isNotEmpty && !controller.isClosed) {
+          controller.add(text);
+        }
+      }
+    } catch (e) {
+      if (!controller.isClosed) controller.addError(e);
+    } finally {
+      _busy = false;
+      if (!controller.isClosed) await controller.close();
+    }
+  }
+
+  @override
+  Future<void> dispose() async {
+    try {
+      if (_engine.has('unload')) {
+        await (_engine.callMethod('unload'.toJS) as JSPromise<JSAny?>).toDart;
+      }
+    } catch (_) {}
   }
 }
 
@@ -660,14 +961,6 @@ class LiteRtLmModelWeb implements LiteRtLmModel {
 
   LiteRtLmModelWeb(this._llm, {required this.backend});
 
-  /// Genera en streaming.
-  ///
-  /// **Los parámetros de sampling se ignoran aquí a propósito.** MediaPipe
-  /// los fija al construir el modelo (`LlmInferenceOptions`), no por
-  /// generación: cambiarlos exigiría recrear el `LlmInference` y recompilar
-  /// en GPU. Se conservan en la firma para no romper la interfaz común con
-  /// la implementación nativa, que sí los admite por llamada. `topP` además
-  /// no existe en la API de MediaPipe.
   @override
   Stream<String> generateStream(
     String prompt, {
@@ -686,8 +979,6 @@ class LiteRtLmModelWeb implements LiteRtLmModel {
     StreamController<String> controller,
     String prompt,
   ) async {
-    // MediaPipe rechaza generaciones concurrentes sobre la misma instancia
-    // ("Only one call to generateResponse() can run at a time").
     if (_busy) {
       controller.addError(
         StateError('Ya hay una generación en curso en este modelo.'),
@@ -709,8 +1000,6 @@ class LiteRtLmModelWeb implements LiteRtLmModel {
 
       final full = await _llm.generateResponse(prompt.toJS, listener).toDart;
 
-      // Si el listener nunca entregó nada pero el Promise sí trae texto,
-      // emitirlo entero: mejor una respuesta de golpe que ninguna.
       if (emitted == 0) {
         final text = full.toDart;
         if (text.isNotEmpty && !controller.isClosed) controller.add(text);
@@ -727,9 +1016,6 @@ class LiteRtLmModelWeb implements LiteRtLmModel {
   Future<void> dispose() async {
     try {
       _llm.close();
-    } catch (_) {
-      // close() es síncrono y puede lanzar si el runtime ya se fue; que no
-      // impida liberar el resto.
-    }
+    } catch (_) {}
   }
 }

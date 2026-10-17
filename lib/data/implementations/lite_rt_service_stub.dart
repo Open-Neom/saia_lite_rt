@@ -50,7 +50,27 @@ class _StubLiteRtService implements SaiaLiteRtService {
   }
 
   @override
-  Future<LiteRtLmModel> loadLmModel(String modelPath, {String accelerator = 'gpu'}) async {
+  Future<LiteRtLmModel> loadLmModel(
+    String modelPath, {
+    String accelerator = 'gpu',
+    void Function(String status, double progress)? onProgress,
+  }) async {
     throw UnsupportedError('LiteRT-LM is only supported on the Web platform.');
   }
+
+  @override
+  Future<String> verifyVisionModel(String modelPath) async {
+    throw UnsupportedError('LiteRT Vision is only supported on the Web platform.');
+  }
+
+  @override
+  Future<String> verifyAudioModel(String modelPath) async {
+    throw UnsupportedError('LiteRT Audio is only supported on the Web platform.');
+  }
+
+  @override
+  String? get huggingFaceToken => null;
+
+  @override
+  void setHuggingFaceToken(String? token) {}
 }
