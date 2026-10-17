@@ -13,7 +13,16 @@ import '../../domain/lite_rt_service.dart';
 
 /// Concrete factory to get the platform-specific implementation.
 class SaiaLiteRt {
-  static SaiaLiteRtService get instance => WebLiteRtService();
+  static SaiaLiteRtService? _customInstance;
+  static final WebLiteRtService _webDefault = WebLiteRtService();
+
+  static SaiaLiteRtService get instance => _customInstance ?? _webDefault;
+
+  static void registerInstance(SaiaLiteRtService service) {
+    _customInstance = service;
+  }
+
+  static bool get hasCustomInstance => _customInstance != null;
 }
 
 // ==========================================

@@ -2,8 +2,21 @@ import '../../domain/lite_rt_model.dart';
 import '../../domain/lite_rt_service.dart';
 
 /// Concrete factory to get the platform-specific implementation.
+///
+/// On native platforms (Android, iOS, macOS), apps can register a native
+/// LiteRT-LM provider (e.g. backed by `flutter_gemma_litertlm`) via
+/// [registerInstance].
 class SaiaLiteRt {
-  static SaiaLiteRtService get instance => _StubLiteRtService();
+  static SaiaLiteRtService? _customInstance;
+
+  static SaiaLiteRtService get instance =>
+      _customInstance ?? _StubLiteRtService();
+
+  static void registerInstance(SaiaLiteRtService service) {
+    _customInstance = service;
+  }
+
+  static bool get hasCustomInstance => _customInstance != null;
 }
 
 class _StubLiteRtService implements SaiaLiteRtService {

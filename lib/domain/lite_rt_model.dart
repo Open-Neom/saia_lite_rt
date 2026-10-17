@@ -135,6 +135,16 @@ class LiteRtModelCatalog {
       sizeBytes: 82000000, // ~82 MB
     ),
   ];
+
+  static List<LiteRtModelInfo> byType(LiteRtModelType type) =>
+      all.where((m) => m.type == type).toList(growable: false);
+
+  static LiteRtModelInfo? findById(String id) {
+    for (final m in all) {
+      if (m.id == id) return m;
+    }
+    return null;
+  }
 }
 
 /// Interface representing a loaded and compiled general LiteRT (.tflite) model.
