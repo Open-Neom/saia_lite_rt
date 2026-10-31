@@ -59,6 +59,12 @@ class _StubLiteRtService implements SaiaLiteRtService {
   }
 
   @override
+  Future<void> unloadLmModel(String modelPath) async {}
+
+  @override
+  bool isLmModelLoaded(String modelPath) => false;
+
+  @override
   Future<String> verifyVisionModel(String modelPath) async {
     throw UnsupportedError('LiteRT Vision is only supported on the Web platform.');
   }

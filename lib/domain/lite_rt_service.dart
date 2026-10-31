@@ -30,6 +30,12 @@ abstract class SaiaLiteRtService {
     void Function(String status, double progress)? onProgress,
   });
 
+  /// Explicitly unloads a previously loaded language model from GPU/WASM memory.
+  Future<void> unloadLmModel(String modelPath);
+
+  /// Returns true if [modelPath] is currently loaded and ready in memory.
+  bool isLmModelLoaded(String modelPath);
+
   /// Carga un embebedor de texto desde un `.tflite` con metadatos de
   /// tokenizador (los de MediaPipe Text Embedder).
   ///

@@ -125,6 +125,7 @@ extension type _MpLlmInference._(JSObject _) implements JSObject {
 
 class WebLiteRtService implements SaiaLiteRtService {
   static const String _hfTokenStorageKey = 'saia_hf_token';
+  final Map<String, LiteRtLmModel> _loadedLmCache = {};
 
   @override
   String? get huggingFaceToken {
@@ -227,6 +228,9 @@ class WebLiteRtService implements SaiaLiteRtService {
 window.__saiaWebAi = {
   _webllmMod: null,
   _engines: {},
+  _loadedModels: {},
+  _loadingPromises: {},
+  _progressListeners: {},
 
   async ensureWebLlm() {
     if (!this._webllmMod) {
@@ -235,25 +239,80 @@ window.__saiaWebAi = {
     return this._webllmMod;
   },
 
-  async createWebLlmEngine(modelId, onProgress) {
-    const webllm = await this.ensureWebLlm();
-    if (this._engines[modelId]) {
-      return this._engines[modelId];
-    }
-    const engine = await webllm.CreateMLCEngine(modelId, {
-      initProgressCallback: (report) => {
-        if (onProgress) {
-          const text = report && report.text ? String(report.text) : 'Cargando...';
-          const prog = report && typeof report.progress === 'number' ? report.progress : 0;
-          onProgress(text, prog);
-        }
-      },
-    });
-    this._engines[modelId] = engine;
-    return engine;
+  isWebLlmLoaded(modelId) {
+    return Boolean(this._engines[modelId] && this._loadedModels[modelId] === true);
   },
 
-  async streamWebLlm(engine, prompt, maxTokens, temp, topP, onChunk) {
+  async unloadWebLlmEngine(modelId) {
+    const pending = this._loadingPromises[modelId];
+    delete this._loadingPromises[modelId];
+    delete this._progressListeners[modelId];
+    this._loadedModels[modelId] = false;
+    const engine = this._engines[modelId];
+    delete this._engines[modelId];
+    if (pending) {
+      try {
+        const loaded = await pending;
+        if (loaded && typeof loaded.unload === 'function') {
+          await loaded.unload();
+        }
+      } catch (_) {}
+    }
+    if (engine && typeof engine.unload === 'function') {
+      try {
+        await engine.unload();
+      } catch (_) {}
+    }
+  },
+
+  async createWebLlmEngine(modelId, onProgress) {
+    if (this._engines[modelId] && this._loadedModels[modelId] === true) {
+      return this._engines[modelId];
+    }
+    if (!this._progressListeners[modelId]) {
+      this._progressListeners[modelId] = [];
+    }
+    if (onProgress) {
+      this._progressListeners[modelId].push(onProgress);
+    }
+    if (this._loadingPromises[modelId]) {
+      return await this._loadingPromises[modelId];
+    }
+    const loadTask = (async () => {
+      const webllm = await this.ensureWebLlm();
+      const notify = (report) => {
+        const listeners = this._progressListeners[modelId] || [];
+        const text = report && report.text ? String(report.text) : 'Cargando...';
+        const prog = report && typeof report.progress === 'number' ? report.progress : 0;
+        for (const fn of listeners) {
+          try { fn(text, prog); } catch (_) {}
+        }
+      };
+      let engine = this._engines[modelId];
+      if (engine && typeof engine.reload === 'function') {
+        if (typeof engine.setInitProgressCallback === 'function') {
+          engine.setInitProgressCallback(notify);
+        }
+        await engine.reload(modelId);
+      } else {
+        engine = await webllm.CreateMLCEngine(modelId, {
+          initProgressCallback: notify,
+        });
+      }
+      this._engines[modelId] = engine;
+      this._loadedModels[modelId] = true;
+      return engine;
+    })();
+    this._loadingPromises[modelId] = loadTask;
+    try {
+      return await loadTask;
+    } finally {
+      delete this._loadingPromises[modelId];
+      delete this._progressListeners[modelId];
+    }
+  },
+
+  async streamWebLlm(engine, modelId, prompt, maxTokens, temp, topP, onChunk) {
     const messages = [];
     const regex = /<\|im_start\|>(\w+)\n([\s\S]*?)(?:<\|im_end\|>|$)/g;
     let match;
@@ -267,13 +326,34 @@ window.__saiaWebAi = {
     if (messages.length === 0) {
       messages.push({ role: 'user', content: prompt.trim() });
     }
-    const chunks = await engine.chat.completions.create({
+
+    let activeEngine = engine;
+    if (!activeEngine || this._loadedModels[modelId] !== true) {
+      activeEngine = await this.createWebLlmEngine(modelId, null);
+    }
+
+    const createCompletion = async (eng) => eng.chat.completions.create({
       messages,
       max_tokens: maxTokens || 512,
       temperature: typeof temp === 'number' ? temp : 0.4,
       top_p: typeof topP === 'number' ? topP : 0.9,
       stream: true,
     });
+
+    let chunks;
+    try {
+      chunks = await createCompletion(activeEngine);
+    } catch (err) {
+      const msg = String(err || '');
+      if (msg.includes('ModelNotLoadedError') || msg.includes('Model not loaded')) {
+        this._loadedModels[modelId] = false;
+        activeEngine = await this.createWebLlmEngine(modelId, null);
+        chunks = await createCompletion(activeEngine);
+      } else {
+        throw err;
+      }
+    }
+
     let full = '';
     for await (const chunk of chunks) {
       const delta = chunk.choices?.[0]?.delta?.content || '';
@@ -353,7 +433,7 @@ window.__saiaWebAi = {
       const topDesc = top
         ? top.categoryName + ' (' + (top.score * 100).toFixed(1) + '%)'
         : 'Escena sintética procesada (0 objetos sobre umbral)';
-      return 'ObjectDetector activo (' + dt + ' ms) · Detecciones: ' + count + ' · ' + topDesc;
+      return 'Itzli Mirada · Detección activa (' + dt + ' ms) · Detecciones: ' + count + ' · ' + topDesc;
     } else {
       const classifier = await mod.ImageClassifier.createFromOptions(fileset, {
         baseOptions: { modelAssetPath: modelUrl },
@@ -367,7 +447,7 @@ window.__saiaWebAi = {
         .slice(0, 3)
         .map(c => (c.categoryName || c.displayName || 'clase #' + c.index) + ' (' + (c.score * 100).toFixed(1) + '%)')
         .join(', ');
-      return 'ImageClassifier activo (' + dt + ' ms) · Top: ' + (summary || 'OK');
+      return 'Itzli Mirada · Clasificación activa (' + dt + ' ms) · Top: ' + (summary || 'OK');
     }
   },
 
@@ -392,7 +472,7 @@ window.__saiaWebAi = {
       .slice(0, 3)
       .map(c => (c.categoryName || c.displayName || 'clase #' + c.index) + ' (' + (c.score * 100).toFixed(1) + '%)')
       .join(', ');
-    return 'AudioClassifier YAMNet activo (' + dt + ' ms) · Señal 440 Hz → ' + (summary || 'OK');
+    return 'Itzli Oído activo (' + dt + ' ms) · Señal 440 Hz → ' + (summary || 'OK');
   }
 };
 ''';
@@ -637,12 +717,53 @@ window.__saiaWebAi = {
   }
 
   @override
+  bool isLmModelLoaded(String modelPath) {
+    final normalized = _normalizeLmModelPath(modelPath);
+    if (!_loadedLmCache.containsKey(normalized)) return false;
+    if (!_isTaskBundleUrl(normalized)) {
+      try {
+        final ok = _webAiHelper.callMethod(
+          'isWebLlmLoaded'.toJS,
+          normalized.toJS,
+        );
+        return ok != null && ok.isA<JSBoolean>() && (ok as JSBoolean).toDart;
+      } catch (_) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  @override
+  Future<void> unloadLmModel(String modelPath) async {
+    final normalized = _normalizeLmModelPath(modelPath);
+    final cached = _loadedLmCache.remove(normalized);
+    if (!_isTaskBundleUrl(normalized)) {
+      try {
+        await (_webAiHelper.callMethod(
+          'unloadWebLlmEngine'.toJS,
+          normalized.toJS,
+        ) as JSPromise<JSAny?>)
+            .toDart;
+      } catch (_) {}
+      return;
+    }
+    if (cached is LiteRtLmModelWeb) {
+      await cached.forceUnload();
+    }
+  }
+
+  @override
   Future<LiteRtLmModel> loadLmModel(
     String modelPath, {
     String accelerator = 'gpu',
     void Function(String status, double progress)? onProgress,
   }) async {
     final normalized = _normalizeLmModelPath(modelPath);
+    if (isLmModelLoaded(normalized)) {
+      final existing = _loadedLmCache[normalized];
+      if (existing != null) return existing;
+    }
 
     // 1. Vía WebLLM (modelos abiertos pre-compilados para WebGPU: Qwen2.5, SmolLM2, Llama 3.2)
     if (!_isTaskBundleUrl(normalized)) {
@@ -655,10 +776,17 @@ window.__saiaWebAi = {
         progressCb,
       ) as JSPromise<JSObject>)
           .toDart;
-      return WebLlmModelWeb(_webAiHelper, engine, backend: 'WebGPU (MLC)');
+      final model = WebLlmModelWeb(
+        _webAiHelper,
+        engine,
+        modelId: normalized,
+        backend: 'WebGPU Local',
+      );
+      _loadedLmCache[normalized] = model;
+      return model;
     }
 
-    // 2. Vía MediaPipe Tasks GenAI (bundles `.task` 4D como `gemma3-270m-it-q8-web.task`)
+    // 2. Vía motor WebGPU de bundles `.task` 4D
     if (!web.window.has('__saia_mp_LlmInference')) {
       await _loadModuleScript('$_mpBase/+esm');
     }
@@ -670,7 +798,7 @@ window.__saiaWebAi = {
         rawFileset == null ||
         !rawFileset.isA<JSObject>()) {
       throw StateError(
-        'MediaPipe GenAI no está cargado. Llama a loadLiteRtLm primero.',
+        'El motor generativo WebGPU de Itzli no está inicializado.',
       );
     }
 
@@ -695,7 +823,9 @@ window.__saiaWebAi = {
     baseOptions.setProperty('delegate'.toJS, 'GPU'.toJS);
     try {
       final llm = await constructor.createFromOptions(fileset, options).toDart;
-      return LiteRtLmModelWeb(llm, backend: 'WebGPU (LiteRT .task)');
+      final model = LiteRtLmModelWeb(llm, backend: 'WebGPU Local');
+      _loadedLmCache[normalized] = model;
+      return model;
     } catch (e) {
       if (!_isDelegateRejection(e)) rethrow;
       throw LiteRtBundleIncompatible(normalized, e.toString());
@@ -779,10 +909,10 @@ class LiteRtBundleIncompatible implements Exception {
 
   @override
   String toString() =>
-      'El backend WebGPU rechazó este modelo: su grafo usa operaciones 5D '
-      'que el delegado WebGPU de MediaPipe no implementa. Usa los modelos '
-      'WebLLM (Qwen 2.5 / SmolLM2 / Llama 3.2) o los bundles -web.task de Gemma 3.\n\n'
-      'Modelo: ${modelPath.split("/").last}';
+      'El acelerador WebGPU rechazó este paquete porque utiliza operaciones 5D '
+      'no soportadas en este navegador. Selecciona uno de los niveles curados de '
+      'Itzli compatibles con WebGPU (Itzli Chispa · 360M, Itzli Fugaz · 0.5B, '
+      'Itzli Pulso · 1B o Itzli Centella · 1.5B).';
 }
 
 // ==========================================
@@ -869,12 +999,18 @@ class LiteRtTextEmbedderWeb implements LiteRtTextEmbedder {
 class WebLlmModelWeb implements LiteRtLmModel {
   final JSObject _helper;
   final JSObject _engine;
+  final String modelId;
   bool _busy = false;
 
   @override
   final String backend;
 
-  WebLlmModelWeb(this._helper, this._engine, {required this.backend});
+  WebLlmModelWeb(
+    this._helper,
+    this._engine, {
+    required this.modelId,
+    required this.backend,
+  });
 
   @override
   Stream<String> generateStream(
@@ -919,6 +1055,7 @@ class WebLlmModelWeb implements LiteRtLmModel {
         'streamWebLlm'.toJS,
         [
           _engine,
+          modelId.toJS,
           prompt.toJS,
           maxTokens.toJS,
           temp.toJS,
@@ -944,11 +1081,8 @@ class WebLlmModelWeb implements LiteRtLmModel {
 
   @override
   Future<void> dispose() async {
-    try {
-      if (_engine.has('unload')) {
-        await (_engine.callMethod('unload'.toJS) as JSPromise<JSAny?>).toDart;
-      }
-    } catch (_) {}
+    // El ciclo de vida en VRAM de los motores WebGPU compartidos es persistente
+    // y solo se descarga explícitamente mediante SaiaLiteRt.instance.unloadLmModel().
   }
 }
 
@@ -1012,10 +1146,14 @@ class LiteRtLmModelWeb implements LiteRtLmModel {
     }
   }
 
-  @override
-  Future<void> dispose() async {
+  Future<void> forceUnload() async {
     try {
       _llm.close();
     } catch (_) {}
+  }
+
+  @override
+  Future<void> dispose() async {
+    // Mantenido en caché hasta llamada explícita a unloadLmModel().
   }
 }

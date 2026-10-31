@@ -60,54 +60,55 @@ class LiteRtModelCatalog {
   static const String kHfTokensUrl = 'https://huggingface.co/settings/tokens';
 
   static const List<LiteRtModelInfo> all = [
-    // ── 1. Chat (WebGPU directo — 100% libres, sin token) ──────────────
-    LiteRtModelInfo(
-      id: 'qwen25-05b',
-      name: 'Qwen2.5 0.5B Instruct (WebGPU)',
-      description:
-          'Modelo multilingüe en español compilado para WebGPU (MLC q4f16). '
-          'Descarga ligera y respuesta fluida en el navegador sin enviar datos.',
-      type: LiteRtModelType.chat,
-      downloadUrl: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
-      sizeBytes: 278921216, // ~266 MB verificados en Chrome WebGPU
-    ),
+    // ── 1. Conversación y Razonamiento en Navegador (WebGPU — 100% libres) ──
     LiteRtModelInfo(
       id: 'smollm2-360m',
-      name: 'SmolLM2 360M Instruct (WebGPU)',
+      name: 'Itzli Chispa · 360M',
       description:
-          'Modelo ultraligero para equipos con poca memoria de video (376 MB VRAM). '
-          'Ideal para pruebas rápidas en navegador.',
+          'Nivel ultraligero de respuesta inmediata (360M parámetros · q4f16 · ~376 MB VRAM). '
+          'Ideal para equipos con memoria gráfica compacta.',
       type: LiteRtModelType.chat,
       downloadUrl: 'SmolLM2-360M-Instruct-q4f16_1-MLC',
       sizeBytes: 199229440, // ~190 MB
     ),
     LiteRtModelInfo(
-      id: 'llama32-1b',
-      name: 'Llama 3.2 1B Instruct (WebGPU)',
+      id: 'qwen25-05b',
+      name: 'Itzli Fugaz · 0.5B',
       description:
-          'Modelo compacto de Meta (1B parámetros, ventana 4K) acelerado por WebGPU.',
+          'Dominio ágil y multilingüe en español (500M parámetros · q4f16). '
+          'Descarga ligera y conversación fluida 100% en tu navegador sin enviar datos.',
+      type: LiteRtModelType.chat,
+      downloadUrl: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
+      sizeBytes: 278921216, // ~266 MB verificados en Chrome WebGPU
+    ),
+    LiteRtModelInfo(
+      id: 'llama32-1b',
+      name: 'Itzli Pulso · 1B',
+      description:
+          'Dominio intermedio de síntesis e instrucciones estructuradas (1,000M parámetros · ventana 4K) '
+          'acelerado por GPU local.',
       type: LiteRtModelType.chat,
       downloadUrl: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',
       sizeBytes: 660602880, // ~630 MB
     ),
     LiteRtModelInfo(
       id: 'qwen25-15b',
-      name: 'Qwen2.5 1.5B Instruct (WebGPU)',
+      name: 'Itzli Centella · 1.5B',
       description:
-          'Mayor capacidad de razonamiento y redacción en español (1.5B parámetros, '
+          'Mayor dominio analítico, razonamiento y redacción en español (1,500M parámetros · '
           'ventana 4K). Requiere ~1.6 GB de VRAM.',
       type: LiteRtModelType.chat,
       downloadUrl: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
       sizeBytes: 922746880, // ~880 MB
     ),
 
-    // ── 2. Chat Gated (Requieren aceptar licencia + Token HF) ──────────
+    // ── 2. Conversación Compacta con Licencia (Requieren licencia + Token HF) ──
     LiteRtModelInfo(
       id: 'gemma3-270m-web',
-      name: 'Gemma 3 270M IT (MediaPipe Web)',
+      name: 'Itzli Brisa · 270M',
       description:
-          'Bundle oficial -web.task de Google para MediaPipe WebGPU. '
-          'Requiere aceptar la licencia de Gemma en HuggingFace y configurar un token de lectura (hf_...).',
+          'Micro-modelo curado de baja latencia (270M parámetros · int8 WebGPU). '
+          'Requiere aceptar la licencia del repositorio y configurar un token de lectura (hf_...).',
       type: LiteRtModelType.chat,
       downloadUrl:
           'https://huggingface.co/litert-community/gemma-3-270m-it/resolve/main/gemma3-270m-it-q8-web.task',
@@ -116,17 +117,17 @@ class LiteRtModelCatalog {
       licenseUrl: 'https://huggingface.co/litert-community/gemma-3-270m-it',
       tokenSetupUrl: kHfTokensUrl,
       requirementSteps: [
-        'Abre el repositorio en HuggingFace y acepta la licencia de uso de Google Gemma.',
-        'Genera un Access Token de tipo Read (empieza con hf_...) en tu cuenta de HuggingFace.',
-        'Pega tu token en el botón "Configurar Token HF" para desbloquear la descarga.',
+        'Abre el repositorio en Hugging Face y acepta la licencia de uso del modelo.',
+        'Genera un Access Token de lectura (empieza con hf_...) en tu cuenta de Hugging Face.',
+        'Pega tu token en el botón "Configurar Token" para desbloquear la descarga.',
       ],
     ),
     LiteRtModelInfo(
       id: 'gemma3-1b-web',
-      name: 'Gemma 3 1B IT (MediaPipe Web)',
+      name: 'Itzli Brisa · 1B',
       description:
-          'Modelo Gemma 3 de 1B cuantizado a int4 específicamente para WebGPU (-web.task). '
-          'Requiere aceptar licencia en HuggingFace y token hf_...',
+          'Dominio compacto extendido (1,000M parámetros · int4 WebGPU). '
+          'Requiere aceptar licencia en Hugging Face y token hf_...',
       type: LiteRtModelType.chat,
       downloadUrl:
           'https://huggingface.co/litert-community/Gemma3-1B-IT/resolve/main/gemma3-1b-it-int4-web.task',
@@ -135,18 +136,18 @@ class LiteRtModelCatalog {
       licenseUrl: 'https://huggingface.co/litert-community/Gemma3-1B-IT',
       tokenSetupUrl: kHfTokensUrl,
       requirementSteps: [
-        'Abre el repositorio litert-community/Gemma3-1B-IT y acepta la licencia de Google.',
-        'Crea un token de lectura (Read) en HuggingFace Settings -> Access Tokens.',
-        'Guarda tu token hf_... aquí para autenticar la descarga desde el navegador.',
+        'Abre el repositorio en Hugging Face y acepta la licencia de uso del modelo.',
+        'Crea un token de lectura (Read) en Hugging Face Settings -> Access Tokens.',
+        'Guarda tu token hf_... aquí para autenticar la descarga desde tu navegador.',
       ],
     ),
 
-    // ── 3. Embeddings Semánticos (WASM — MediaPipe Text Embedder) ──────
+    // ── 3. Memoria Semántica y Embeddings (Familia Itzli Raíz) ──────────
     LiteRtModelInfo(
       id: 'universal-sentence-encoder',
-      name: 'Universal Sentence Encoder (Multilingüe)',
+      name: 'Itzli Raíz · Ligero (6M · 100d)',
       description:
-          'Embeddings semánticos ultrarrápidos (100 dimensiones, L2-normalizados) '
+          'Vectores semánticos ultrarrápidos (6M parámetros · 100 dimensiones L2) '
           'para memoria episódica y búsqueda por significado en el navegador.',
       type: LiteRtModelType.embeddings,
       downloadUrl:
@@ -155,10 +156,10 @@ class LiteRtModelCatalog {
     ),
     LiteRtModelInfo(
       id: 'bert-embedder',
-      name: 'BERT Text Embedder (512 dims)',
+      name: 'Itzli Raíz · Denso (110M · 512d)',
       description:
-          'Embeddings densos de mayor precisión basados en BERT (512 dimensiones, '
-          'con tokenizador WordPiece integrado en el bundle .tflite).',
+          'Representación semántica densa de mayor precisión (110M parámetros · 512 dimensiones '
+          'con tokenizador integrado).',
       type: LiteRtModelType.embeddings,
       downloadUrl:
           'https://storage.googleapis.com/mediapipe-models/text_embedder/bert_embedder/float32/1/bert_embedder.tflite',
@@ -166,10 +167,10 @@ class LiteRtModelCatalog {
     ),
     LiteRtModelInfo(
       id: 'embeddinggemma-300m',
-      name: 'EmbeddingGemma 300M (LiteRT)',
+      name: 'Itzli Raíz · Profundo (300M · 768d)',
       description:
-          'Modelo de embeddings de Google (seq256, precisión mixta). '
-          'Requiere aceptar licencia en HuggingFace y token hf_...',
+          'Dominio profundo de recuperación semántica (300M parámetros · seq256 · precisión mixta). '
+          'Requiere aceptar licencia en Hugging Face y token hf_...',
       type: LiteRtModelType.embeddings,
       downloadUrl:
           'https://huggingface.co/litert-community/embeddinggemma-300m/resolve/main/embeddinggemma-300M_seq256_mixed-precision.tflite',
@@ -178,19 +179,19 @@ class LiteRtModelCatalog {
       licenseUrl: 'https://huggingface.co/litert-community/embeddinggemma-300m',
       tokenSetupUrl: kHfTokensUrl,
       requirementSteps: [
-        'Acepta la licencia del repositorio litert-community/embeddinggemma-300m en HuggingFace.',
-        'Genera un token de lectura (hf_...) en HuggingFace Settings -> Access Tokens.',
+        'Acepta la licencia del repositorio en Hugging Face.',
+        'Genera un token de lectura (hf_...) en Hugging Face Settings -> Access Tokens.',
         'Configura tu token hf_... para descargar y verificar el modelo.',
       ],
     ),
 
-    // ── 4. Visión por Computadora (WASM/WebGPU — MediaPipe Vision) ─────
+    // ── 4. Percepción Visual (Familia Itzli Mirada · WASM/WebGPU) ───────
     LiteRtModelInfo(
       id: 'mobilenet-v3',
-      name: 'EfficientNet-Lite0 (Clasificador Visual)',
+      name: 'Itzli Mirada · Clasificación Visual (5.3M)',
       description:
-          'Clasificación de imágenes en tiempo real (1,000 categorías ImageNet) '
-          'ejecutándose 100% en el navegador vía MediaPipe Vision.',
+          'Reconocimiento de escenas y objetos en tiempo real (5.3M parámetros · 1,000 categorías) '
+          'ejecutándose 100% en tu navegador.',
       type: LiteRtModelType.vision,
       downloadUrl:
           'https://storage.googleapis.com/mediapipe-models/image_classifier/efficientnet_lite0/float32/1/efficientnet_lite0.tflite',
@@ -198,75 +199,88 @@ class LiteRtModelCatalog {
     ),
     LiteRtModelInfo(
       id: 'ssd-mobilenet-v2',
-      name: 'SSD MobileNet V2 (Detector de Objetos)',
+      name: 'Itzli Mirada · Detección Espacial (4.5M)',
       description:
-          'Detección de múltiples objetos y cajas delimitadoras (80 clases COCO) '
-          'optimizado en float16 para cámaras y lienzos web.',
+          'Detección simultánea de múltiples objetos y cajas delimitadoras (4.5M parámetros · float16 · 80 clases) '
+          'optimizada para cámaras y lienzos locales.',
       type: LiteRtModelType.vision,
       downloadUrl:
           'https://storage.googleapis.com/mediapipe-models/object_detector/ssd_mobilenet_v2/float16/1/ssd_mobilenet_v2.tflite',
       sizeBytes: 5918749, // 5.6 MB verificados
     ),
 
-    // ── 5. Audio (WASM — MediaPipe Audio Classifier) ───────────────────
+    // ── 5. Percepción Acústica y Escucha (Familia Itzli Oído) ───────────
     LiteRtModelInfo(
       id: 'yamnet',
-      name: 'YAMNet (Clasificador Acústico 521 Eventos)',
+      name: 'Itzli Oído · Percepción Acústica (3.7M)',
       description:
-          'Reconocimiento de 521 eventos acústicos (voz, música, alarmas, '
-          'naturaleza) a 16 kHz directamente en el navegador.',
+          'Reconocimiento de 521 eventos sonoros (voz, música, alertas, '
+          'entorno natural · 3.7M parámetros a 16 kHz) directamente en tu navegador.',
       type: LiteRtModelType.audio,
       downloadUrl:
           'https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite',
       sizeBytes: 4126810, // 4 MB verificados
     ),
-    // ── Modelos Ultra-Ligeros Embebidos (codebase_ia: KittenTTS, Audio8, Needle 3, Whistle) ──
+
+    // ── 6. Modelos Ultra-Ligeros Embebidos Curados por Itzli ────────────
     LiteRtModelInfo(
       id: 'kitten-tts-nano-int8',
-      name: 'KittenTTS Nano 0.8 (15M INT8)',
-      description: 'Síntesis de voz neural ultra-ligera (15M parámetros, <25 MB ONNX/LiteRT) que corre en tiempo real en CPU sin GPU.',
+      name: 'Itzli Tlahtolli · Nano (15M INT8)',
+      description:
+          'Síntesis de voz neuronal ultra-ligera (15M parámetros · <25 MB) que corre en tiempo real sobre CPU/WASM sin GPU.',
       type: LiteRtModelType.tts,
-      downloadUrl: 'https://huggingface.co/KittenML/kitten-tts-nano-0.8-int8/resolve/main/kitten_tts_nano_v0_8.onnx',
+      downloadUrl:
+          'https://huggingface.co/KittenML/kitten-tts-nano-0.8-int8/resolve/main/kitten_tts_nano_v0_8.onnx',
       sizeBytes: 25000000, // ~25 MB
     ),
     LiteRtModelInfo(
       id: 'kitten-tts-micro',
-      name: 'KittenTTS Micro 0.8 (40M)',
-      description: 'Síntesis de voz expresiva local (40M parámetros, 41 MB) para anuncios comunitarios y alertas audibles off-grid.',
+      name: 'Itzli Tlahtolli · Micro (40M)',
+      description:
+          'Síntesis de voz expresiva local (40M parámetros · 41 MB) para anuncios comunitarios y lectura fluida sin conexión.',
       type: LiteRtModelType.tts,
-      downloadUrl: 'https://huggingface.co/KittenML/kitten-tts-micro-0.8/resolve/main/kitten_tts_micro_v0_8.onnx',
+      downloadUrl:
+          'https://huggingface.co/KittenML/kitten-tts-micro-0.8/resolve/main/kitten_tts_micro_v0_8.onnx',
       sizeBytes: 41000000, // ~41 MB
     ),
     LiteRtModelInfo(
       id: 'kitten-tts-2-emb4',
-      name: 'KittenTTS 2 (1.7B 1-bit emb4 Multilingüe)',
-      description: 'TTS multilingüe (20 idiomas incl. Español, 47 voces) con etiquetas de emoción [excited]/[whisper] y clonación de voz en CPU.',
+      name: 'Itzli Tlahtolli · Estudio Multilingüe (1.7B 1-bit)',
+      description:
+          'Dominio vocal expresivo de gran escala (1,700M parámetros 1-bit · 20 idiomas incl. Español, 47 voces y matices emocionales).',
       type: LiteRtModelType.tts,
-      downloadUrl: 'https://huggingface.co/KittenML/kitten-tts-2-emb4/resolve/main/kitten_tts_2_emb4.gguf',
+      downloadUrl:
+          'https://huggingface.co/KittenML/kitten-tts-2-emb4/resolve/main/kitten_tts_2_emb4.gguf',
       sizeBytes: 530579456, // ~506 MiB (1-bit weights + 4-bit embeddings)
     ),
     LiteRtModelInfo(
       id: 'audio8-tts-01b-int8',
-      name: 'Audio8-TTS 0.1B (Mamba2 + Attention INT8)',
-      description: 'TTS multilingüe con soporte nativo de Español y clonación zero-shot basado en arquitectura híbrida Falcon-H1 Mamba2.',
+      name: 'Itzli Tlahtolli · Clonación Ligera (100M INT8)',
+      description:
+          'Síntesis multilingüe en Español con clonación de voz Zero-Shot (100M parámetros INT8 · 44.1 kHz).',
       type: LiteRtModelType.tts,
-      downloadUrl: 'https://huggingface.co/Audio8/Audio8-TTS-0.1B-ONNX-INT8/resolve/main/model_int8.onnx',
+      downloadUrl:
+          'https://huggingface.co/Audio8/Audio8-TTS-0.1B-ONNX-INT8/resolve/main/model_int8.onnx',
       sizeBytes: 95000000, // ~95 MB
     ),
     LiteRtModelInfo(
       id: 'needle-3-mobile',
-      name: 'Needle 3 (2.125-bit .cact Tool Calling + Embeddings)',
-      description: 'Motor unificado de 18 MB para extracción JSON restringida por gramática, clasificación de emergencias, tool-calling y embeddings.',
+      name: 'Itzli Aguja · Herramientas (80M · 2-bit)',
+      description:
+          'Micro-motor unificado de 18 MB (80M parámetros · 2.125 bits) para extracción JSON restringida por gramática, herramientas y vectores.',
       type: LiteRtModelType.chat,
-      downloadUrl: 'https://huggingface.co/cactus-compute/needle-3-mobile/resolve/main/needle-3.cact',
+      downloadUrl:
+          'https://huggingface.co/cactus-compute/needle-3-mobile/resolve/main/needle-3.cact',
       sizeBytes: 18874368, // ~18 MB (rango 8-29 MB en 2.125 bits/peso)
     ),
     LiteRtModelInfo(
       id: 'whistle-stt-int4',
-      name: 'Whistle STT (16.9 MB Speech-to-Text)',
-      description: 'Reconocimiento de voz a texto offline en Español e Inglés (8.6x más pequeño que Whisper base) para comandos de voz comunitarios.',
+      name: 'Itzli Oído · Transcripción Ligera (39M INT4)',
+      description:
+          'Reconocimiento de voz a texto offline en Español e Inglés (39M parámetros INT4 · 16.9 MB) para dictado y comandos locales.',
       type: LiteRtModelType.audio,
-      downloadUrl: 'https://huggingface.co/cactus-compute/whistle-stt/resolve/main/whistle.cact',
+      downloadUrl:
+          'https://huggingface.co/cactus-compute/whistle-stt/resolve/main/whistle.cact',
       sizeBytes: 17720934, // ~16.9 MB
     ),
   ];
