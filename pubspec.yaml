@@ -1,8 +1,11 @@
 name: saia_lite_rt
 description: On-device and web-accelerated runtime wrapper for LiteRT (TensorFlow Lite) and LiteRT-LM models in Flutter.
-version: 1.0.0
+version: 1.2.0
 homepage: https://github.com/Open-Neom/saia_lite_rt
 repository: https://github.com/Open-Neom/saia_lite_rt
+issue_tracker: https://github.com/Open-Neom/saia_lite_rt/issues
+funding:
+  - https://github.com/sponsors/Open-Neom
 
 environment:
   sdk: ">=3.10.0 <4.0.0"
