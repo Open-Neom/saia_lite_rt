@@ -22,11 +22,15 @@ class SaiaLiteRt {
 class _StubLiteRtService implements SaiaLiteRtService {
   @override
   Future<void> loadLiteRt({String? wasmPath}) async {
+    if (wasmPath != null) {
+      LiteRtUrlPolicy.validateTrustedModuleUrl(wasmPath);
+    }
     throw UnsupportedError('LiteRT is only supported on the Web platform.');
   }
 
   @override
   Future<LiteRtModel> loadModel(String modelPath, {String accelerator = 'webgpu'}) async {
+    LiteRtUrlPolicy.validateModelAssetUrl(modelPath);
     throw UnsupportedError('LiteRT is only supported on the Web platform.');
   }
 
@@ -36,16 +40,24 @@ class _StubLiteRtService implements SaiaLiteRtService {
   Future<bool> isWebGpuAvailable() async => false;
 
   @override
+  Future<LiteRtBrowserCapabilities> probeBrowserCapabilities() async =>
+      const LiteRtBrowserCapabilities(hasWebGpu: false);
+
+  @override
   Future<LiteRtTextEmbedder> loadTextEmbedder(
     String modelPath, {
     bool l2Normalize = true,
   }) async {
+    LiteRtUrlPolicy.validateModelAssetUrl(modelPath);
     // En nativo la vía de embeddings es GGUF (fllama), no esta.
     throw UnsupportedError('LiteRT text embedder is Web-only.');
   }
 
   @override
   Future<void> loadLiteRtLm({String? moduleUrl}) async {
+    if (moduleUrl != null) {
+      LiteRtUrlPolicy.validateTrustedModuleUrl(moduleUrl);
+    }
     throw UnsupportedError('LiteRT-LM is only supported on the Web platform.');
   }
 
@@ -55,8 +67,22 @@ class _StubLiteRtService implements SaiaLiteRtService {
     String accelerator = 'gpu',
     void Function(String status, double progress)? onProgress,
   }) async {
+    final trimmed = modelPath.trim();
+    final lower = trimmed.toLowerCase();
+    final isBundle = lower.endsWith('.task') ||
+        lower.endsWith('.bin') ||
+        lower.startsWith('http://') ||
+        lower.startsWith('https://') ||
+        lower.startsWith('blob:');
+    if (isBundle || _controlOrSchemeLike(modelPath)) {
+      LiteRtUrlPolicy.validateModelAssetUrl(modelPath);
+    } else {
+      LiteRtUrlPolicy.validateWebLlmModelId(modelPath);
+    }
     throw UnsupportedError('LiteRT-LM is only supported on the Web platform.');
   }
+
+  static bool _controlOrSchemeLike(String s) => s.contains('://') || s.startsWith('//');
 
   @override
   Future<void> unloadLmModel(String modelPath) async {}
@@ -66,17 +92,23 @@ class _StubLiteRtService implements SaiaLiteRtService {
 
   @override
   Future<String> verifyVisionModel(String modelPath) async {
+    LiteRtUrlPolicy.validateModelAssetUrl(modelPath);
     throw UnsupportedError('LiteRT Vision is only supported on the Web platform.');
   }
 
   @override
   Future<String> verifyAudioModel(String modelPath) async {
+    LiteRtUrlPolicy.validateModelAssetUrl(modelPath);
     throw UnsupportedError('LiteRT Audio is only supported on the Web platform.');
   }
 
-  @override
-  String? get huggingFaceToken => null;
+  String? _hfToken;
 
   @override
-  void setHuggingFaceToken(String? token) {}
+  String? get huggingFaceToken => _hfToken;
+
+  @override
+  void setHuggingFaceToken(String? token) {
+    _hfToken = LiteRtUrlPolicy.sanitizeHfToken(token);
+  }
 }

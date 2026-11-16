@@ -1,3 +1,5 @@
+library;
+
 export 'domain/lite_rt_model.dart';
 export 'domain/lite_rt_service.dart';
 export 'data/implementations/lite_rt_service_stub.dart'

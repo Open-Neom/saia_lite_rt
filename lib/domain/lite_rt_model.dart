@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
+
 /// The modality or type of the LiteRT model.
 enum LiteRtModelType {
   chat,
@@ -31,6 +33,11 @@ class LiteRtModelInfo {
   /// Human-readable step-by-step requirements if the model requires extra setup.
   final List<String> requirementSteps;
 
+  /// True when this model is managed internally by the orchestrator (e.g.
+  /// vision, audio perception, or grammar tool extraction) and should not be
+  /// shown as a standalone user-selectable brain card in the UI.
+  final bool isInternalOnly;
+
   const LiteRtModelInfo({
     required this.id,
     required this.name,
@@ -42,15 +49,48 @@ class LiteRtModelInfo {
     this.licenseUrl,
     this.tokenSetupUrl,
     this.requirementSteps = const [],
+    this.isInternalOnly = false,
   });
 
   /// Human-readable file size (e.g. "1.5 GB", "30 MB").
   String get displaySize {
+    if (!sizeBytes.isFinite || sizeBytes <= 0) {
+      return '0 MB';
+    }
     if (sizeBytes >= 1024 * 1024 * 1024) {
       return '${(sizeBytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
     }
     return '${(sizeBytes / (1024 * 1024)).toStringAsFixed(0)} MB';
   }
+
+  /// Whether [urlOrId] uses a browser-supported runtime format (WebLLM `-MLC`,
+  /// MediaPipe `.task`/`.bin`/`.litertlm`, `.tflite`, or `.onnx`), excluding
+  /// native-only artifacts such as `.gguf` and `.cact`.
+  static bool isWebCompatibleArtifact(String urlOrId) {
+    final trimmed = urlOrId.trim();
+    if (trimmed.isEmpty) return false;
+    final lower = trimmed.toLowerCase().split('?').first.split('#').first;
+    if (lower.endsWith('.gguf') || lower.endsWith('.cact')) {
+      return false;
+    }
+    if (!lower.contains('://')) {
+      return lower.contains('-mlc') ||
+          lower.endsWith('.task') ||
+          lower.endsWith('.bin') ||
+          lower.endsWith('.litertlm') ||
+          lower.endsWith('.tflite') ||
+          lower.endsWith('.onnx');
+    }
+    return lower.startsWith('blob:') ||
+        lower.endsWith('.task') ||
+        lower.endsWith('.bin') ||
+        lower.endsWith('.litertlm') ||
+        lower.endsWith('.tflite') ||
+        lower.endsWith('.onnx');
+  }
+
+  /// True when this model can run in a WebGPU / WASM browser runtime.
+  bool get isWebCompatible => isWebCompatibleArtifact(downloadUrl);
 }
 
 /// A built-in catalog of verified WebGPU / WASM models for browser edge execution.
@@ -59,8 +99,9 @@ class LiteRtModelCatalog {
 
   static const String kHfTokensUrl = 'https://huggingface.co/settings/tokens';
 
-  static const List<LiteRtModelInfo> all = [
-    // ── 1. Conversación y Razonamiento en Navegador (WebGPU — 100% libres) ──
+  /// Full catalog including native-only embedded entries (`.gguf`, `.cact`).
+  static const List<LiteRtModelInfo> catalogEntries = [
+    // ── 1. Conversación y Razonamiento en Navegador (WebGPU — 100% Apache 2.0, 0 llaves) ──
     LiteRtModelInfo(
       id: 'smollm2-360m',
       name: 'Itzli Chispa · 360M',
@@ -82,67 +123,57 @@ class LiteRtModelCatalog {
       sizeBytes: 278921216, // ~266 MB verificados en Chrome WebGPU
     ),
     LiteRtModelInfo(
-      id: 'llama32-1b',
-      name: 'Itzli Pulso · 1B',
+      id: 'qwen3-06b',
+      name: 'Itzli Fugaz · 0.6B',
       description:
-          'Dominio intermedio de síntesis e instrucciones estructuradas (1,000M parámetros · ventana 4K) '
-          'acelerado por GPU local.',
+          'Razonamiento híbrido ligero y baja latencia (600M parámetros · q4f16 · ~1.4 GB VRAM). '
+          'Piensa paso a paso y resuelve problemas concretos sin salir del navegador.',
       type: LiteRtModelType.chat,
-      downloadUrl: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',
-      sizeBytes: 660602880, // ~630 MB
+      downloadUrl: 'Qwen3-0.6B-q4f16_1-MLC',
+      sizeBytes: 367001600, // ~350 MB
     ),
     LiteRtModelInfo(
       id: 'qwen25-15b',
       name: 'Itzli Centella · 1.5B',
       description:
-          'Mayor dominio analítico, razonamiento y redacción en español (1,500M parámetros · '
+          'Dominio conversacional ágil y redacción en español (1,500M parámetros · '
           'ventana 4K). Requiere ~1.6 GB de VRAM.',
       type: LiteRtModelType.chat,
       downloadUrl: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
       sizeBytes: 922746880, // ~880 MB
     ),
-
-    // ── 2. Conversación Compacta con Licencia (Requieren licencia + Token HF) ──
     LiteRtModelInfo(
-      id: 'gemma3-270m-web',
-      name: 'Itzli Brisa · 270M',
+      id: 'qwen3-17b',
+      name: 'Itzli Centella · 1.7B',
       description:
-          'Micro-modelo curado de baja latencia (270M parámetros · int8 WebGPU). '
-          'Requiere aceptar la licencia del repositorio y configurar un token de lectura (hf_...).',
+          'Dominio intermedio con pensamiento paso a paso y síntesis multilingüe en español '
+          '(1,700M parámetros · q4f16 · ~2.0 GB VRAM).',
       type: LiteRtModelType.chat,
-      downloadUrl:
-          'https://huggingface.co/litert-community/gemma-3-270m-it/resolve/main/gemma3-270m-it-q8-web.task',
-      sizeBytes: 293601280, // ~280 MB
-      requiresHfToken: true,
-      licenseUrl: 'https://huggingface.co/litert-community/gemma-3-270m-it',
-      tokenSetupUrl: kHfTokensUrl,
-      requirementSteps: [
-        'Abre el repositorio en Hugging Face y acepta la licencia de uso del modelo.',
-        'Genera un Access Token de lectura (empieza con hf_...) en tu cuenta de Hugging Face.',
-        'Pega tu token en el botón "Configurar Token" para desbloquear la descarga.',
-      ],
+      downloadUrl: 'Qwen3-1.7B-q4f16_1-MLC',
+      sizeBytes: 1027604480, // ~980 MB
     ),
     LiteRtModelInfo(
-      id: 'gemma3-1b-web',
-      name: 'Itzli Brisa · 1B',
+      id: 'qwen25-3b',
+      name: 'Itzli Centella · 3B',
       description:
-          'Dominio compacto extendido (1,000M parámetros · int4 WebGPU). '
-          'Requiere aceptar licencia en Hugging Face y token hf_...',
+          'Dominio completo de conversación natural, síntesis e instrucciones estructuradas '
+          '(3,000M parámetros · ventana 4K · ~2.5 GB VRAM).',
       type: LiteRtModelType.chat,
-      downloadUrl:
-          'https://huggingface.co/litert-community/Gemma3-1B-IT/resolve/main/gemma3-1b-it-int4-web.task',
-      sizeBytes: 576716800, // ~550 MB
-      requiresHfToken: true,
-      licenseUrl: 'https://huggingface.co/litert-community/Gemma3-1B-IT',
-      tokenSetupUrl: kHfTokensUrl,
-      requirementSteps: [
-        'Abre el repositorio en Hugging Face y acepta la licencia de uso del modelo.',
-        'Crea un token de lectura (Read) en Hugging Face Settings -> Access Tokens.',
-        'Guarda tu token hf_... aquí para autenticar la descarga desde tu navegador.',
-      ],
+      downloadUrl: 'Qwen2.5-3B-Instruct-q4f16_1-MLC',
+      sizeBytes: 1782579200, // ~1.7 GB
+    ),
+    LiteRtModelInfo(
+      id: 'qwen3-4b',
+      name: 'Itzli Semilla · 4B',
+      description:
+          'Máxima capacidad analítica, código y razonamiento profundo acelerado por GPU '
+          'en tu navegador (4,000M parámetros · q4f16 · ~3.4 GB VRAM).',
+      type: LiteRtModelType.chat,
+      downloadUrl: 'Qwen3-4B-q4f16_1-MLC',
+      sizeBytes: 2306867200, // ~2.2 GB
     ),
 
-    // ── 3. Memoria Semántica y Embeddings (Familia Itzli Raíz) ──────────
+    // ── 2. Memoria Semántica y Embeddings (Familia Itzli Raíz — 100% libres) ──
     LiteRtModelInfo(
       id: 'universal-sentence-encoder',
       name: 'Itzli Raíz · Ligero (6M · 100d)',
@@ -166,63 +197,53 @@ class LiteRtModelCatalog {
       sizeBytes: 26142232, // 25 MB verificados
     ),
     LiteRtModelInfo(
-      id: 'embeddinggemma-300m',
-      name: 'Itzli Raíz · Profundo (300M · 768d)',
+      id: 'qwen3-embedding-06b',
+      name: 'Itzli Raíz · Profundo (600M · 1024d)',
       description:
-          'Dominio profundo de recuperación semántica (300M parámetros · seq256 · precisión mixta). '
-          'Requiere aceptar licencia en Hugging Face y token hf_...',
+          'Dominio profundo de recuperación semántica multilingüe en más de 100 idiomas '
+          '(600M parámetros · hasta 1,024 dimensiones MRL · Q8_0).',
       type: LiteRtModelType.embeddings,
       downloadUrl:
-          'https://huggingface.co/litert-community/embeddinggemma-300m/resolve/main/embeddinggemma-300M_seq256_mixed-precision.tflite',
-      sizeBytes: 199229440, // ~190 MB
-      requiresHfToken: true,
-      licenseUrl: 'https://huggingface.co/litert-community/embeddinggemma-300m',
-      tokenSetupUrl: kHfTokensUrl,
-      requirementSteps: [
-        'Acepta la licencia del repositorio en Hugging Face.',
-        'Genera un token de lectura (hf_...) en Hugging Face Settings -> Access Tokens.',
-        'Configura tu token hf_... para descargar y verificar el modelo.',
-      ],
+          'https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf',
+      sizeBytes: 639000000, // ~610 MiB
     ),
 
-    // ── 4. Percepción Visual (Familia Itzli Mirada · WASM/WebGPU) ───────
+    // ── 3. Motores Internos de Percepción Multimodal (No expuestos al usuario) ──
     LiteRtModelInfo(
       id: 'mobilenet-v3',
-      name: 'Itzli Mirada · Clasificación Visual (5.3M)',
+      name: 'Itzli Percepción · Escenas (5.3M)',
       description:
-          'Reconocimiento de escenas y objetos en tiempo real (5.3M parámetros · 1,000 categorías) '
-          'ejecutándose 100% en tu navegador.',
+          'Motor interno de clasificación visual en tiempo real (5.3M parámetros · 1,000 categorías).',
       type: LiteRtModelType.vision,
       downloadUrl:
           'https://storage.googleapis.com/mediapipe-models/image_classifier/efficientnet_lite0/float32/1/efficientnet_lite0.tflite',
       sizeBytes: 18582189, // 18 MB verificados
+      isInternalOnly: true,
     ),
     LiteRtModelInfo(
       id: 'ssd-mobilenet-v2',
-      name: 'Itzli Mirada · Detección Espacial (4.5M)',
+      name: 'Itzli Percepción · Objetos (4.5M)',
       description:
-          'Detección simultánea de múltiples objetos y cajas delimitadoras (4.5M parámetros · float16 · 80 clases) '
-          'optimizada para cámaras y lienzos locales.',
+          'Motor interno de detección espacial de objetos y cajas delimitadoras (4.5M parámetros · float16 · 80 clases).',
       type: LiteRtModelType.vision,
       downloadUrl:
           'https://storage.googleapis.com/mediapipe-models/object_detector/ssd_mobilenet_v2/float16/1/ssd_mobilenet_v2.tflite',
       sizeBytes: 5918749, // 5.6 MB verificados
+      isInternalOnly: true,
     ),
-
-    // ── 5. Percepción Acústica y Escucha (Familia Itzli Oído) ───────────
     LiteRtModelInfo(
       id: 'yamnet',
-      name: 'Itzli Oído · Percepción Acústica (3.7M)',
+      name: 'Itzli Percepción · Audio (3.7M)',
       description:
-          'Reconocimiento de 521 eventos sonoros (voz, música, alertas, '
-          'entorno natural · 3.7M parámetros a 16 kHz) directamente en tu navegador.',
+          'Motor interno de detección de 521 eventos sonoros (3.7M parámetros a 16 kHz).',
       type: LiteRtModelType.audio,
       downloadUrl:
           'https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite',
       sizeBytes: 4126810, // 4 MB verificados
+      isInternalOnly: true,
     ),
 
-    // ── 6. Modelos Ultra-Ligeros Embebidos Curados por Itzli ────────────
+    // ── 4. Síntesis de Voz y Micro-Herramientas Internas ────────────────
     LiteRtModelInfo(
       id: 'kitten-tts-nano-int8',
       name: 'Itzli Tlahtolli · Nano (15M INT8)',
@@ -232,6 +253,7 @@ class LiteRtModelCatalog {
       downloadUrl:
           'https://huggingface.co/KittenML/kitten-tts-nano-0.8-int8/resolve/main/kitten_tts_nano_v0_8.onnx',
       sizeBytes: 25000000, // ~25 MB
+      isInternalOnly: true,
     ),
     LiteRtModelInfo(
       id: 'kitten-tts-micro',
@@ -242,6 +264,7 @@ class LiteRtModelCatalog {
       downloadUrl:
           'https://huggingface.co/KittenML/kitten-tts-micro-0.8/resolve/main/kitten_tts_micro_v0_8.onnx',
       sizeBytes: 41000000, // ~41 MB
+      isInternalOnly: true,
     ),
     LiteRtModelInfo(
       id: 'kitten-tts-2-emb4',
@@ -252,6 +275,7 @@ class LiteRtModelCatalog {
       downloadUrl:
           'https://huggingface.co/KittenML/kitten-tts-2-emb4/resolve/main/kitten_tts_2_emb4.gguf',
       sizeBytes: 530579456, // ~506 MiB (1-bit weights + 4-bit embeddings)
+      isInternalOnly: true,
     ),
     LiteRtModelInfo(
       id: 'audio8-tts-01b-int8',
@@ -262,28 +286,47 @@ class LiteRtModelCatalog {
       downloadUrl:
           'https://huggingface.co/Audio8/Audio8-TTS-0.1B-ONNX-INT8/resolve/main/model_int8.onnx',
       sizeBytes: 95000000, // ~95 MB
+      isInternalOnly: true,
     ),
     LiteRtModelInfo(
       id: 'needle-3-mobile',
       name: 'Itzli Aguja · Herramientas (80M · 2-bit)',
       description:
-          'Micro-motor unificado de 18 MB (80M parámetros · 2.125 bits) para extracción JSON restringida por gramática, herramientas y vectores.',
+          'Micro-motor interno de 18 MB (80M parámetros · 2.125 bits) para extracción JSON restringida por gramática y herramientas.',
       type: LiteRtModelType.chat,
       downloadUrl:
           'https://huggingface.co/cactus-compute/needle-3-mobile/resolve/main/needle-3.cact',
       sizeBytes: 18874368, // ~18 MB (rango 8-29 MB en 2.125 bits/peso)
+      isInternalOnly: true,
     ),
     LiteRtModelInfo(
       id: 'whistle-stt-int4',
-      name: 'Itzli Oído · Transcripción Ligera (39M INT4)',
+      name: 'Itzli Percepción · Dictado (39M INT4)',
       description:
-          'Reconocimiento de voz a texto offline en Español e Inglés (39M parámetros INT4 · 16.9 MB) para dictado y comandos locales.',
+          'Reconocimiento interno de voz a texto offline en Español e Inglés (39M parámetros INT4 · 16.9 MB).',
       type: LiteRtModelType.audio,
       downloadUrl:
           'https://huggingface.co/cactus-compute/whistle-stt/resolve/main/whistle.cact',
       sizeBytes: 17720934, // ~16.9 MB
+      isInternalOnly: true,
     ),
   ];
+
+  /// Models verified to execute on Web (WebGPU / WASM), excluding native-only
+  /// `.gguf` and `.cact` artifacts.
+  static List<LiteRtModelInfo> get webCompatible =>
+      catalogEntries.where((m) => m.isWebCompatible).toList(growable: false);
+
+  /// Platform-filtered model list: returns [webCompatible] on Web and
+  /// [catalogEntries] on native runtimes.
+  static List<LiteRtModelInfo> get all =>
+      kIsWeb ? webCompatible : catalogEntries;
+
+  /// User-facing models for the LOCAL panel (chat brains and semantic memory
+  /// `Itzli Raíz`), excluding internal perception/audio/tool models that are
+  /// managed automatically under the hood.
+  static List<LiteRtModelInfo> get userVisible =>
+      all.where((m) => !m.isInternalOnly).toList(growable: false);
 
   static List<LiteRtModelInfo> byType(LiteRtModelType type) =>
       all.where((m) => m.type == type).toList(growable: false);
@@ -294,13 +337,107 @@ class LiteRtModelCatalog {
   static List<LiteRtModelInfo> forLowResourceMobile({
     int maxModelSizeBytes = 50 * 1024 * 1024,
   }) =>
-      all.where((m) => m.sizeBytes <= maxModelSizeBytes).toList(growable: false);
+      (!maxModelSizeBytes.isFinite || maxModelSizeBytes <= 0)
+          ? const []
+          : all
+              .where((m) => m.sizeBytes <= maxModelSizeBytes)
+              .toList(growable: false);
+
+  static const Map<String, String> _legacyIdAliases = {
+    'gemma3-270m-web': 'qwen3-06b',
+    'gemma3-1b-web': 'qwen3-17b',
+    'llama32-1b': 'qwen25-3b',
+    'embeddinggemma-300m': 'bert-embedder',
+  };
 
   static LiteRtModelInfo? findById(String id) {
+    final canonicalId = _legacyIdAliases[id] ?? id;
     for (final m in all) {
-      if (m.id == id) return m;
+      if (m.id == canonicalId || m.id == id) return m;
+    }
+    for (final m in catalogEntries) {
+      if (m.id == canonicalId || m.id == id) return m;
     }
     return null;
+  }
+
+  /// Selects the best zero-token (`requiresHfToken == false`) WebGPU chat model
+  /// that fits [availableStorageBytes] and [deviceMemoryGb] for background
+  /// internal orchestration in the browser.
+  static LiteRtModelInfo? selectRecommendedWebAuxiliaryModel({
+    int? availableStorageBytes,
+    double? deviceMemoryGb,
+  }) {
+    const minFugazStorageBytes = 600 * 1024 * 1024; // ~600 MB headroom for 266 MB model
+    const minChispaStorageBytes = 240 * 1024 * 1024; // ~240 MB headroom for 190 MB model
+
+    final storageAllowsFugaz = availableStorageBytes == null ||
+        availableStorageBytes >= minFugazStorageBytes;
+    final memoryAllowsFugaz =
+        deviceMemoryGb == null || deviceMemoryGb >= 4.0;
+    if (storageAllowsFugaz && memoryAllowsFugaz) {
+      return findById('qwen25-05b') ?? findById('smollm2-360m');
+    }
+
+    final storageAllowsChispa = availableStorageBytes == null ||
+        availableStorageBytes >= minChispaStorageBytes;
+    final memoryAllowsChispa =
+        deviceMemoryGb == null || deviceMemoryGb >= 2.0;
+    if (storageAllowsChispa && memoryAllowsChispa) {
+      return findById('smollm2-360m');
+    }
+    return null;
+  }
+}
+
+/// Snapshot of browser WebGPU, storage quota, and RAM readiness for automatic
+/// or 1-click internal orchestration without leaving the main chat view.
+class LiteRtBrowserCapabilities {
+  final bool hasWebGpu;
+  final int? availableStorageBytes;
+  final double? deviceMemoryGb;
+  final LiteRtModelInfo? recommendedModel;
+
+  const LiteRtBrowserCapabilities({
+    required this.hasWebGpu,
+    this.availableStorageBytes,
+    this.deviceMemoryGb,
+    this.recommendedModel,
+  });
+
+  /// True when the browser exposes WebGPU and has enough storage/RAM headroom
+  /// to run [recommendedModel] for internal orchestration.
+  bool get canAddForInternalOrchestration =>
+      hasWebGpu && recommendedModel != null;
+
+  /// Human-readable free storage label (e.g. "4.2 GB libres").
+  String? get availableStorageLabel {
+    final bytes = availableStorageBytes;
+    if (bytes == null || !bytes.isFinite || bytes <= 0) return null;
+    final gb = bytes / (1024 * 1024 * 1024);
+    if (gb >= 1.0) return '${gb.toStringAsFixed(1)} GB libres';
+    final mb = bytes / (1024 * 1024);
+    return '${mb.toStringAsFixed(0)} MB libres';
+  }
+
+  /// Concise status summary for UI badges/tooltips.
+  String get summaryLabel {
+    if (!hasWebGpu) {
+      return 'WebGPU no disponible en este navegador';
+    }
+    final rec = recommendedModel;
+    final parts = <String>['WebGPU activo'];
+    final storage = availableStorageLabel;
+    if (storage != null) parts.add(storage);
+    if (deviceMemoryGb != null && deviceMemoryGb! > 0) {
+      parts.add('${deviceMemoryGb!.toStringAsFixed(0)} GB RAM');
+    }
+    if (rec != null) {
+      parts.add('Sugerido: ${rec.name} (${rec.displaySize})');
+    } else {
+      parts.add('Espacio insuficiente para modelo local');
+    }
+    return parts.join(' · ');
   }
 }
 
@@ -348,6 +485,7 @@ abstract class LiteRtLmModel {
     String prompt, {
     int maxTokens = 512,
     double temp = 0.4,
+    double? temperature,
     double topP = 0.9,
     int topK = 40,
     int? seed,

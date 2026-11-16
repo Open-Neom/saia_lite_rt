@@ -2,7 +2,6 @@
 library;
 
 import 'dart:async';
-import 'dart:convert';
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 import 'dart:typed_data';
@@ -38,7 +37,7 @@ external JSPromise<_JsLiteRtModel> _jsLoadAndCompile(
   _JsLiteRtOptions options,
 );
 
-@JS('Tensor')
+@JS('LiteRtTensor')
 extension type _JsLiteRtTensor._(JSObject _) implements JSObject {
   external factory _JsLiteRtTensor(JSFloat32Array data, JSArray<JSNumber> shape);
   external JSPromise<_JsLiteRtTensor> moveTo(JSString target);
@@ -125,14 +124,114 @@ extension type _MpLlmInference._(JSObject _) implements JSObject {
 
 class WebLiteRtService implements SaiaLiteRtService {
   static const String _hfTokenStorageKey = 'saia_hf_token';
+  static const String _trustedTypesPolicyName = 'saia-litert-loader';
+  static JSObject? _trustedScriptPolicy;
+
   final Map<String, LiteRtLmModel> _loadedLmCache = {};
+  Future<void>? _liteRtLoadFuture;
+
+  /// Installs a minimal W3C Trusted Types tinyfill (`createPolicy: (name, rules) => rules`)
+  /// on browsers that do not yet expose `window.trustedTypes`, so our validation
+  /// rules execute identically across all browsers.
+  static void _ensureTrustedTypesTinyfill() {
+    if (web.window.has('trustedTypes')) {
+      final existing = web.window.getProperty('trustedTypes'.toJS);
+      if (existing != null && existing.isA<JSObject>()) return;
+    }
+    final tinyfill = JSObject();
+    tinyfill.setProperty(
+      'createPolicy'.toJS,
+      ((JSString _, JSObject rules) => rules).toJS,
+    );
+    web.window.setProperty('trustedTypes'.toJS, tinyfill);
+  }
+
+  /// Assigns inline module/helper code to [script] via an allowlist-enforcing
+  /// W3C Trusted Types policy (`saia-litert-loader`), with a tinyfill fallback
+  /// for browsers without native `window.trustedTypes`.
+  ///
+  /// Never acts as an unvalidated pass-through: unauthorized script payloads
+  /// throw [ArgumentError] before reaching the DOM sink.
+  static void _assignTrustedScriptText(
+    web.HTMLScriptElement script,
+    String code,
+  ) {
+    if (!LiteRtUrlPolicy.isAuthorizedInlineScript(
+      code,
+      helperScript: _webAiHelperScript,
+    )) {
+      throw ArgumentError(
+        'Rejected unauthorized inline script in saia-litert-loader policy.',
+      );
+    }
+    try {
+      _ensureTrustedTypesTinyfill();
+      var policy = _trustedScriptPolicy;
+      if (policy == null && web.window.has('trustedTypes')) {
+        final ttAny = web.window.getProperty('trustedTypes'.toJS);
+        if (ttAny != null && ttAny.isA<JSObject>()) {
+          final tt = ttAny as JSObject;
+          if (tt.has('createPolicy')) {
+            final rules = JSObject();
+            rules.setProperty(
+              'createScript'.toJS,
+              ((JSString input) {
+                final dartCode = input.toDart;
+                if (!LiteRtUrlPolicy.isAuthorizedInlineScript(
+                  dartCode,
+                  helperScript: _webAiHelperScript,
+                )) {
+                  throw ArgumentError(
+                    'Rejected unauthorized inline script in saia-litert-loader policy.',
+                  );
+                }
+                return dartCode.toJS;
+              }).toJS,
+            );
+            final created = tt.callMethod(
+              'createPolicy'.toJS,
+              _trustedTypesPolicyName.toJS,
+              rules,
+            );
+            if (created != null && created.isA<JSObject>()) {
+              policy = created as JSObject;
+              _trustedScriptPolicy = policy;
+            }
+          }
+        }
+      }
+      if (policy != null) {
+        final trustedScript = policy.callMethod(
+          'createScript'.toJS,
+          code.toJS,
+        );
+        (script as JSObject).setProperty('text'.toJS, trustedScript);
+        return;
+      }
+    } catch (_) {
+      // Fallback when CSP restricts policy names; `code` was already verified
+      // against `LiteRtUrlPolicy.isAuthorizedInlineScript` above.
+    }
+    script.text = code;
+  }
 
   @override
   String? get huggingFaceToken {
     try {
-      final raw = web.window.localStorage.getItem(_hfTokenStorageKey);
-      if (raw == null || raw.trim().isEmpty) return null;
-      return raw.trim();
+      var raw = web.window.sessionStorage.getItem(_hfTokenStorageKey);
+      // One-time migration away from persistent localStorage to sessionStorage.
+      final legacy = web.window.localStorage.getItem(_hfTokenStorageKey);
+      if (legacy != null) {
+        web.window.localStorage.removeItem(_hfTokenStorageKey);
+        if (raw == null || raw.isEmpty) {
+          final migrated = LiteRtUrlPolicy.sanitizeHfToken(legacy);
+          if (migrated != null) {
+            web.window.sessionStorage.setItem(_hfTokenStorageKey, migrated);
+            raw = migrated;
+          }
+        }
+      }
+      return LiteRtUrlPolicy.sanitizeHfToken(raw);
     } catch (_) {
       return null;
     }
@@ -140,21 +239,42 @@ class WebLiteRtService implements SaiaLiteRtService {
 
   @override
   void setHuggingFaceToken(String? token) {
+    final clean = LiteRtUrlPolicy.sanitizeHfToken(token);
     try {
-      final clean = token?.trim() ?? '';
-      if (clean.isEmpty) {
-        web.window.localStorage.removeItem(_hfTokenStorageKey);
+      web.window.localStorage.removeItem(_hfTokenStorageKey);
+      if (clean == null) {
+        web.window.sessionStorage.removeItem(_hfTokenStorageKey);
       } else {
-        web.window.localStorage.setItem(_hfTokenStorageKey, clean);
+        web.window.sessionStorage.setItem(_hfTokenStorageKey, clean);
       }
     } catch (_) {}
   }
 
   @override
   Future<void> loadLiteRt({String? wasmPath}) async {
+    final validatedWasmUrl = LiteRtUrlPolicy.validateTrustedModuleUrl(
+      wasmPath ?? 'https://cdn.jsdelivr.net/npm/@litertjs/core/wasm/',
+    );
     if (web.window.has('__saia_litert_wasm_loaded')) return;
-    if (web.window.has('__saia_litert_wasm_loading')) return;
 
+    final inFlight = _liteRtLoadFuture;
+    if (inFlight != null) {
+      await inFlight;
+      return;
+    }
+
+    final future = _loadLiteRtInternal(validatedWasmUrl);
+    _liteRtLoadFuture = future;
+    try {
+      await future;
+    } finally {
+      if (identical(_liteRtLoadFuture, future)) {
+        _liteRtLoadFuture = null;
+      }
+    }
+  }
+
+  Future<void> _loadLiteRtInternal(String wasmUrl) async {
     web.window.setProperty('__saia_litert_wasm_loading'.toJS, true.toJS);
     try {
       if (!web.window.has('loadLiteRt')) {
@@ -162,8 +282,6 @@ class WebLiteRtService implements SaiaLiteRtService {
           'https://cdn.jsdelivr.net/npm/@litertjs/core/+esm',
         );
       }
-      final wasmUrl =
-          wasmPath ?? 'https://cdn.jsdelivr.net/npm/@litertjs/core/wasm/';
       await _jsLoadLiteRt(wasmUrl.toJS).toDart;
       web.window.setProperty('__saia_litert_wasm_loaded'.toJS, true.toJS);
     } catch (e) {
@@ -184,8 +302,15 @@ class WebLiteRtService implements SaiaLiteRtService {
     String modelPath, {
     String accelerator = 'webgpu',
   }) async {
-    final options = _JsLiteRtOptions(accelerator: accelerator.toJS);
-    final jsModel = await _jsLoadAndCompile(modelPath.toJS, options).toDart;
+    final safeModelPath = LiteRtUrlPolicy.validateModelAssetUrl(modelPath);
+    if (!LiteRtModelInfo.isWebCompatibleArtifact(safeModelPath)) {
+      throw UnsupportedError(
+        'Model artifact is not compatible with Web LiteRT runtime: $safeModelPath',
+      );
+    }
+    final safeAccelerator = LiteRtUrlPolicy.validateAccelerator(accelerator);
+    final options = _JsLiteRtOptions(accelerator: safeAccelerator.toJS);
+    final jsModel = await _jsLoadAndCompile(safeModelPath.toJS, options).toDart;
     return LiteRtModelWeb(jsModel);
   }
 
@@ -206,9 +331,73 @@ class WebLiteRtService implements SaiaLiteRtService {
   }
 
   @override
+  Future<LiteRtBrowserCapabilities> probeBrowserCapabilities() async {
+    final hasGpu = await isWebGpuAvailable();
+    int? availableStorageBytes;
+    double? deviceMemoryGb;
+    try {
+      final nav = web.window.navigator as JSObject;
+      if (nav.has('deviceMemory')) {
+        final rawMem = nav.getProperty('deviceMemory'.toJS);
+        if (rawMem != null && rawMem.isA<JSNumber>()) {
+          final parsed = (rawMem as JSNumber).toDartDouble;
+          if (parsed.isFinite && parsed > 0) {
+            deviceMemoryGb = parsed;
+          }
+        }
+      }
+      if (nav.has('storage')) {
+        final storage = nav.getProperty('storage'.toJS);
+        if (storage != null &&
+            storage.isA<JSObject>() &&
+            (storage as JSObject).has('estimate')) {
+          final estAny = await storage
+              .callMethod<JSPromise<JSAny?>>('estimate'.toJS)
+              .toDart;
+          if (estAny != null && estAny.isA<JSObject>()) {
+            final est = estAny as JSObject;
+            final quotaAny = est.getProperty('quota'.toJS);
+            final usageAny = est.getProperty('usage'.toJS);
+            final quota = (quotaAny != null && quotaAny.isA<JSNumber>())
+                ? (quotaAny as JSNumber).toDartDouble
+                : null;
+            final usage = (usageAny != null && usageAny.isA<JSNumber>())
+                ? (usageAny as JSNumber).toDartDouble
+                : 0.0;
+            if (quota != null &&
+                quota.isFinite &&
+                quota > 0 &&
+                usage.isFinite &&
+                usage >= 0) {
+              final remaining = (quota - usage).round();
+              if (remaining >= 0) {
+                availableStorageBytes = remaining;
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    final recommended = hasGpu
+        ? LiteRtModelCatalog.selectRecommendedWebAuxiliaryModel(
+            availableStorageBytes: availableStorageBytes,
+            deviceMemoryGb: deviceMemoryGb,
+          )
+        : null;
+    return LiteRtBrowserCapabilities(
+      hasWebGpu: hasGpu,
+      availableStorageBytes: availableStorageBytes,
+      deviceMemoryGb: deviceMemoryGb,
+      recommendedModel: recommended,
+    );
+  }
+
+  @override
   Future<void> loadLiteRtLm({String? moduleUrl}) async {
     if (moduleUrl != null) {
-      await _loadModuleScript(moduleUrl);
+      final safeUrl = LiteRtUrlPolicy.validateTrustedModuleUrl(moduleUrl);
+      await _loadModuleScript(safeUrl);
       return;
     }
     // Por defecto aseguramos el helper JS para WebLLM y MediaPipe.
@@ -221,16 +410,20 @@ class WebLiteRtService implements SaiaLiteRtService {
   ///   gated de Hugging Face (Gemma 3 `-web.task`, EmbeddingGemma)
   /// - Verificación real de modelos de Visión (`@mediapipe/tasks-vision`)
   ///   y Audio (`@mediapipe/tasks-audio`)
-  void _ensureWebAiHelper() {
-    if (web.window.has('__saiaWebAi')) return;
-    final script = web.HTMLScriptElement();
-    script.text = r'''
+  /// Public entry point for security verification of the `saia-litert-loader`
+  /// Trusted Types policy and tinyfill fallback on Web.
+  static void assignTrustedScriptText(
+    web.HTMLScriptElement script,
+    String code,
+  ) => _assignTrustedScriptText(script, code);
+
+  static const String _webAiHelperScript = r'''
 window.__saiaWebAi = {
   _webllmMod: null,
-  _engines: {},
-  _loadedModels: {},
-  _loadingPromises: {},
-  _progressListeners: {},
+  _engines: Object.create(null),
+  _loadedModels: Object.create(null),
+  _loadingPromises: Object.create(null),
+  _progressListeners: Object.create(null),
 
   async ensureWebLlm() {
     if (!this._webllmMod) {
@@ -312,7 +505,7 @@ window.__saiaWebAi = {
     }
   },
 
-  async streamWebLlm(engine, modelId, prompt, maxTokens, temp, topP, onChunk) {
+  async streamWebLlm(engine, modelId, prompt, maxTokens, temp, topP, topK, seed, onChunk) {
     const messages = [];
     const regex = /<\|im_start\|>(\w+)\n([\s\S]*?)(?:<\|im_end\|>|$)/g;
     let match;
@@ -332,13 +525,21 @@ window.__saiaWebAi = {
       activeEngine = await this.createWebLlmEngine(modelId, null);
     }
 
-    const createCompletion = async (eng) => eng.chat.completions.create({
+    const reqOpts = {
       messages,
       max_tokens: maxTokens || 512,
       temperature: typeof temp === 'number' ? temp : 0.4,
       top_p: typeof topP === 'number' ? topP : 0.9,
       stream: true,
-    });
+    };
+    if (typeof topK === 'number' && topK > 0) {
+      reqOpts.top_k = Math.round(topK);
+    }
+    if (typeof seed === 'number' && Number.isFinite(seed)) {
+      reqOpts.seed = Math.trunc(seed);
+    }
+
+    const createCompletion = async (eng) => eng.chat.completions.create(reqOpts);
 
     let chunks;
     try {
@@ -365,12 +566,57 @@ window.__saiaWebAi = {
     return full;
   },
 
+  async runMpLlm(llm, prompt, maxTokens, temp, topP, topK, seed, onPartial) {
+    const opts = {
+      maxTokens: typeof maxTokens === 'number' && maxTokens > 0 ? Math.round(maxTokens) : 512,
+      temperature: typeof temp === 'number' ? temp : 0.4,
+      topP: typeof topP === 'number' ? topP : 0.9,
+      topK: typeof topK === 'number' && topK > 0 ? Math.round(topK) : 40,
+    };
+    if (typeof seed === 'number' && Number.isFinite(seed)) {
+      opts.randomSeed = Math.trunc(seed);
+    }
+    if (llm && typeof llm.setOptions === 'function') {
+      try {
+        await llm.setOptions(opts);
+      } catch (_) {}
+    }
+    return await llm.generateResponse(prompt, onPartial);
+  },
+
   async fetchWithHfToken(url, token, onProgress) {
-    const headers = {};
+    const maxBytes = 4 * 1024 * 1024 * 1024;
+    const parsed = new URL(url);
+    const host = (parsed.hostname || '').toLowerCase().replace(/\.+$/, '');
+    let isHfHost = false;
+    if (parsed.origin !== 'null' && parsed.protocol === 'https:' && !parsed.username && !parsed.password) {
+      if ('Origin' in globalThis) {
+        try {
+          const candidateOrigin = Origin.from(parsed);
+          isHfHost = !candidateOrigin.opaque &&
+            (candidateOrigin.isSameSite(Origin.from('https://huggingface.co')) ||
+             candidateOrigin.isSameSite(Origin.from('https://hf.co')));
+        } catch (_) {
+          isHfHost = false;
+        }
+      } else {
+        isHfHost = host === 'huggingface.co' || host.endsWith('.huggingface.co') ||
+          host === 'hf.co' || host.endsWith('.hf.co');
+      }
+    }
+    if (!isHfHost) {
+      throw new Error('Untrusted Hugging Face host for authenticated fetch');
+    }
+    const headers = Object.create(null);
     if (token && token.trim().length > 0) {
       headers['Authorization'] = 'Bearer ' + token.trim();
     }
-    const res = await fetch(url, { headers });
+    const res = await fetch(url, {
+      headers,
+      mode: 'cors',
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+    });
     if (res.status === 401 || res.status === 403) {
       throw new Error(
         'HTTP ' + res.status + ': Acceso restringido en Hugging Face. ' +
@@ -381,9 +627,16 @@ window.__saiaWebAi = {
     if (!res.ok) {
       throw new Error('HTTP ' + res.status + ' descargando ' + url);
     }
-    const total = Number(res.headers.get('content-length') || 0);
+    const rawLen = res.headers.get('content-length');
+    const total = rawLen === null || rawLen === '' ? 0 : Number(rawLen);
+    if (!Number.isFinite(total) || total < 0 || total > maxBytes) {
+      throw new Error('Model artifact exceeds maximum allowed size (4 GiB)');
+    }
     if (!res.body || !res.body.getReader) {
       const blob = await res.blob();
+      if (blob.size > maxBytes) {
+        throw new Error('Model artifact exceeds maximum allowed size (4 GiB)');
+      }
       return URL.createObjectURL(blob);
     }
     const reader = res.body.getReader();
@@ -392,8 +645,12 @@ window.__saiaWebAi = {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      parts.push(value);
       loaded += value.byteLength;
+      if (loaded > maxBytes) {
+        try { await reader.cancel(); } catch (_) {}
+        throw new Error('Model artifact stream exceeded maximum allowed size (4 GiB)');
+      }
+      parts.push(value);
       if (onProgress && total > 0) {
         onProgress('Descargando (' + Math.round((loaded / 1048576) * 10) / 10 + ' MB)...', loaded / total);
       }
@@ -433,7 +690,7 @@ window.__saiaWebAi = {
       const topDesc = top
         ? top.categoryName + ' (' + (top.score * 100).toFixed(1) + '%)'
         : 'Escena sintética procesada (0 objetos sobre umbral)';
-      return 'Itzli Mirada · Detección activa (' + dt + ' ms) · Detecciones: ' + count + ' · ' + topDesc;
+      return 'Percepción visual · Detección activa (' + dt + ' ms) · Detecciones: ' + count + ' · ' + topDesc;
     } else {
       const classifier = await mod.ImageClassifier.createFromOptions(fileset, {
         baseOptions: { modelAssetPath: modelUrl },
@@ -447,7 +704,7 @@ window.__saiaWebAi = {
         .slice(0, 3)
         .map(c => (c.categoryName || c.displayName || 'clase #' + c.index) + ' (' + (c.score * 100).toFixed(1) + '%)')
         .join(', ');
-      return 'Itzli Mirada · Clasificación activa (' + dt + ' ms) · Top: ' + (summary || 'OK');
+      return 'Percepción visual · Clasificación activa (' + dt + ' ms) · Top: ' + (summary || 'OK');
     }
   },
 
@@ -472,10 +729,17 @@ window.__saiaWebAi = {
       .slice(0, 3)
       .map(c => (c.categoryName || c.displayName || 'clase #' + c.index) + ' (' + (c.score * 100).toFixed(1) + '%)')
       .join(', ');
-    return 'Itzli Oído activo (' + dt + ' ms) · Señal 440 Hz → ' + (summary || 'OK');
+    return 'Percepción acústica activa (' + dt + ' ms) · Señal 440 Hz → ' + (summary || 'OK');
   }
 };
 ''';
+
+  void _ensureWebAiHelper() {
+    if (web.window.has('__saiaWebAi')) return;
+    final script = web.HTMLScriptElement()
+      ..crossOrigin = 'anonymous'
+      ..referrerPolicy = 'no-referrer';
+    _assignTrustedScriptText(script, _webAiHelperScript);
     (web.document.head ?? web.document.body)?.append(script);
   }
 
@@ -485,6 +749,7 @@ window.__saiaWebAi = {
   }
 
   Future<void> _loadModuleScript(String moduleUrl) async {
+    final safeModuleUrl = LiteRtUrlPolicy.validateTrustedModuleUrl(moduleUrl);
     final completer = Completer<void>();
     const callbackName = '__saia_litert_lm_init';
 
@@ -505,27 +770,14 @@ window.__saiaWebAi = {
       }.toJS,
     );
 
-    final script = web.HTMLScriptElement();
-    script.type = 'module';
-    script.text = '''
-      import(${jsonEncode(moduleUrl)}).then(mod => {
-        if (!mod?.LlmInference || !mod?.FilesetResolver) {
-          throw new Error(
-            'El modulo cargado no expone LlmInference/FilesetResolver: ' +
-            Object.keys(mod || {}).join(',')
-          );
-        }
-        window.__saia_mp_LlmInference = mod.LlmInference;
-        window.__saia_mp_FilesetResolver = mod.FilesetResolver;
-        if (window.$callbackName) {
-          window.$callbackName(null);
-        }
-      }).catch(e => {
-        if (window.$callbackName) {
-          window.$callbackName(String(e && e.message ? e.message : e));
-        }
-      });
-    ''';
+    final script = web.HTMLScriptElement()
+      ..type = 'module'
+      ..crossOrigin = 'anonymous'
+      ..referrerPolicy = 'no-referrer';
+    _assignTrustedScriptText(
+      script,
+      LiteRtUrlPolicy.buildLmModuleLoaderScript(safeModuleUrl),
+    );
 
     script.addEventListener(
       'error',
@@ -542,11 +794,13 @@ window.__saiaWebAi = {
     try {
       await completer.future.timeout(const Duration(seconds: 20));
     } finally {
+      script.remove();
       web.window.delete(callbackName.toJS);
     }
   }
 
   Future<void> _loadModuleScriptGeneral(String moduleUrl) async {
+    final safeModuleUrl = LiteRtUrlPolicy.validateTrustedModuleUrl(moduleUrl);
     final completer = Completer<void>();
     const callbackName = '__saia_litert_core_init';
 
@@ -567,28 +821,14 @@ window.__saiaWebAi = {
       }.toJS,
     );
 
-    final script = web.HTMLScriptElement();
-    script.type = 'module';
-    script.text = '''
-      import(${jsonEncode(moduleUrl)}).then(mod => {
-        if (mod?.loadLiteRt) {
-          window.loadLiteRt = mod.loadLiteRt;
-        }
-        if (mod?.loadAndCompile) {
-          window.loadAndCompile = mod.loadAndCompile;
-        }
-        if (mod?.Tensor) {
-          window.LiteRtTensor = mod.Tensor;
-        }
-        if (window.$callbackName) {
-          window.$callbackName(null);
-        }
-      }).catch(e => {
-        if (window.$callbackName) {
-          window.$callbackName(e);
-        }
-      });
-    ''';
+    final script = web.HTMLScriptElement()
+      ..type = 'module'
+      ..crossOrigin = 'anonymous'
+      ..referrerPolicy = 'no-referrer';
+    _assignTrustedScriptText(
+      script,
+      LiteRtUrlPolicy.buildCoreModuleLoaderScript(safeModuleUrl),
+    );
 
     script.addEventListener(
       'error',
@@ -605,12 +845,14 @@ window.__saiaWebAi = {
     try {
       await completer.future.timeout(const Duration(seconds: 15));
     } finally {
+      script.remove();
       web.window.delete(callbackName.toJS);
     }
   }
 
   /// Importa `@mediapipe/tasks-text` y expone sus clases en `window`.
   Future<void> _loadTextModuleScript(String moduleUrl) async {
+    final safeModuleUrl = LiteRtUrlPolicy.validateTrustedModuleUrl(moduleUrl);
     final completer = Completer<void>();
     const callbackName = '__saia_mp_text_init';
 
@@ -628,30 +870,31 @@ window.__saiaWebAi = {
       }.toJS,
     );
 
-    final script = web.HTMLScriptElement();
-    script.type = 'module';
-    script.text = '''
-      import(${jsonEncode(moduleUrl)}).then(mod => {
-        if (!mod?.TextEmbedder || !mod?.FilesetResolver) {
-          throw new Error(
-            'El modulo no expone TextEmbedder/FilesetResolver: ' +
-            Object.keys(mod || {}).join(',')
+    final script = web.HTMLScriptElement()
+      ..type = 'module'
+      ..crossOrigin = 'anonymous'
+      ..referrerPolicy = 'no-referrer';
+    _assignTrustedScriptText(
+      script,
+      LiteRtUrlPolicy.buildTextModuleLoaderScript(safeModuleUrl),
+    );
+
+    script.addEventListener(
+      'error',
+      ((web.Event _) {
+        if (!completer.isCompleted) {
+          completer.completeError(
+            StateError('Failed to load MediaPipe Text web module script'),
           );
         }
-        window.__saia_mp_TextEmbedder = mod.TextEmbedder;
-        window.__saia_mp_TextFilesetResolver = mod.FilesetResolver;
-        if (window.$callbackName) window.$callbackName(null);
-      }).catch(e => {
-        if (window.$callbackName) {
-          window.$callbackName(String(e && e.message ? e.message : e));
-        }
-      });
-    ''';
+      }).toJS,
+    );
 
     web.document.head?.append(script);
     try {
       await completer.future.timeout(const Duration(seconds: 20));
     } finally {
+      script.remove();
       web.window.delete(callbackName.toJS);
     }
   }
@@ -689,7 +932,7 @@ window.__saiaWebAi = {
     String url, {
     void Function(String status, double progress)? onProgress,
   }) async {
-    if (!url.contains('huggingface.co')) return url;
+    if (!LiteRtUrlPolicy.isTrustedHuggingFaceUrl(url)) return url;
     final token = huggingFaceToken;
     // Si es un repo de litert-community gated (Gemma) o si hay token HF,
     // descargamos con fetch + Authorization header y creamos un Blob URL.
@@ -718,13 +961,14 @@ window.__saiaWebAi = {
 
   @override
   bool isLmModelLoaded(String modelPath) {
-    final normalized = _normalizeLmModelPath(modelPath);
+    final normalized = _normalizeLmModelPath(modelPath.trim());
     if (!_loadedLmCache.containsKey(normalized)) return false;
     if (!_isTaskBundleUrl(normalized)) {
       try {
+        final safeId = LiteRtUrlPolicy.validateWebLlmModelId(normalized);
         final ok = _webAiHelper.callMethod(
           'isWebLlmLoaded'.toJS,
-          normalized.toJS,
+          safeId.toJS,
         );
         return ok != null && ok.isA<JSBoolean>() && (ok as JSBoolean).toDart;
       } catch (_) {
@@ -736,13 +980,14 @@ window.__saiaWebAi = {
 
   @override
   Future<void> unloadLmModel(String modelPath) async {
-    final normalized = _normalizeLmModelPath(modelPath);
+    final normalized = _normalizeLmModelPath(modelPath.trim());
     final cached = _loadedLmCache.remove(normalized);
     if (!_isTaskBundleUrl(normalized)) {
       try {
+        final safeId = LiteRtUrlPolicy.validateWebLlmModelId(normalized);
         await (_webAiHelper.callMethod(
           'unloadWebLlmEngine'.toJS,
-          normalized.toJS,
+          safeId.toJS,
         ) as JSPromise<JSAny?>)
             .toDart;
       } catch (_) {}
@@ -759,7 +1004,15 @@ window.__saiaWebAi = {
     String accelerator = 'gpu',
     void Function(String status, double progress)? onProgress,
   }) async {
-    final normalized = _normalizeLmModelPath(modelPath);
+    final rawNormalized = _normalizeLmModelPath(modelPath.trim());
+    final normalized = _isTaskBundleUrl(rawNormalized)
+        ? LiteRtUrlPolicy.validateModelAssetUrl(rawNormalized)
+        : LiteRtUrlPolicy.validateWebLlmModelId(rawNormalized);
+    if (!LiteRtModelInfo.isWebCompatibleArtifact(normalized)) {
+      throw UnsupportedError(
+        'Language model artifact is not compatible with Web runtime: $normalized',
+      );
+    }
     if (isLmModelLoaded(normalized)) {
       final existing = _loadedLmCache[normalized];
       if (existing != null) return existing;
@@ -806,29 +1059,46 @@ window.__saiaWebAi = {
       normalized,
       onProgress: onProgress,
     );
+    final createdTempBlobUrl =
+        resolvedAssetPath != normalized && resolvedAssetPath.startsWith('blob:');
 
-    final resolver = _MpFilesetResolver._(rawFileset as JSObject);
-    final fileset = await resolver.forGenAiTasks('$_mpBase/wasm'.toJS).toDart;
-
-    final baseOptions = JSObject();
-    baseOptions.setProperty('modelAssetPath'.toJS, resolvedAssetPath.toJS);
-
-    final options = JSObject();
-    options.setProperty('baseOptions'.toJS, baseOptions);
-    options.setProperty('maxTokens'.toJS, _maxTokensFor(normalized).toJS);
-    options.setProperty('topK'.toJS, 40.toJS);
-    options.setProperty('temperature'.toJS, 0.4.toJS);
-
-    final constructor = _MpLlmInferenceConstructor._(rawLlm as JSObject);
-    baseOptions.setProperty('delegate'.toJS, 'GPU'.toJS);
     try {
-      final llm = await constructor.createFromOptions(fileset, options).toDart;
-      final model = LiteRtLmModelWeb(llm, backend: 'WebGPU Local');
-      _loadedLmCache[normalized] = model;
-      return model;
-    } catch (e) {
-      if (!_isDelegateRejection(e)) rethrow;
-      throw LiteRtBundleIncompatible(normalized, e.toString());
+      final resolver = _MpFilesetResolver._(rawFileset as JSObject);
+      final fileset =
+          await resolver.forGenAiTasks('$_mpBase/wasm'.toJS).toDart;
+
+      final baseOptions = JSObject();
+      baseOptions.setProperty('modelAssetPath'.toJS, resolvedAssetPath.toJS);
+
+      final options = JSObject();
+      options.setProperty('baseOptions'.toJS, baseOptions);
+      options.setProperty('maxTokens'.toJS, _maxTokensFor(normalized).toJS);
+      options.setProperty('topK'.toJS, 40.toJS);
+      options.setProperty('topP'.toJS, 0.9.toJS);
+      options.setProperty('temperature'.toJS, 0.4.toJS);
+
+      final constructor = _MpLlmInferenceConstructor._(rawLlm as JSObject);
+      baseOptions.setProperty('delegate'.toJS, 'GPU'.toJS);
+      try {
+        final llm =
+            await constructor.createFromOptions(fileset, options).toDart;
+        final model = LiteRtLmModelWeb(
+          _webAiHelper,
+          llm,
+          backend: 'WebGPU Local',
+        );
+        _loadedLmCache[normalized] = model;
+        return model;
+      } catch (e) {
+        if (!_isDelegateRejection(e)) rethrow;
+        throw LiteRtBundleIncompatible(normalized, e.toString());
+      }
+    } finally {
+      if (createdTempBlobUrl) {
+        try {
+          web.URL.revokeObjectURL(resolvedAssetPath);
+        } catch (_) {}
+      }
     }
   }
 
@@ -837,6 +1107,7 @@ window.__saiaWebAi = {
     String modelPath, {
     bool l2Normalize = true,
   }) async {
+    final safeModelPath = LiteRtUrlPolicy.validateModelAssetUrl(modelPath);
     if (!web.window.has('__saia_mp_TextEmbedder')) {
       await _loadTextModuleScript('$_mpTextBase/+esm');
     }
@@ -851,32 +1122,46 @@ window.__saiaWebAi = {
       throw StateError('MediaPipe Text no expuso TextEmbedder.');
     }
 
-    final resolvedAssetPath = await _resolveAuthenticatedUrlIfNeeded(modelPath);
+    final resolvedAssetPath =
+        await _resolveAuthenticatedUrlIfNeeded(safeModelPath);
+    final createdTempBlobUrl = resolvedAssetPath != safeModelPath &&
+        resolvedAssetPath.startsWith('blob:');
 
-    final resolver = _MpTextFilesetResolver._(rawFileset as JSObject);
-    final fileset =
-        await resolver.forTextTasks('$_mpTextBase/wasm'.toJS).toDart;
+    try {
+      final resolver = _MpTextFilesetResolver._(rawFileset as JSObject);
+      final fileset =
+          await resolver.forTextTasks('$_mpTextBase/wasm'.toJS).toDart;
 
-    final baseOptions = JSObject();
-    baseOptions.setProperty('modelAssetPath'.toJS, resolvedAssetPath.toJS);
+      final baseOptions = JSObject();
+      baseOptions.setProperty('modelAssetPath'.toJS, resolvedAssetPath.toJS);
 
-    final options = JSObject();
-    options.setProperty('baseOptions'.toJS, baseOptions);
-    options.setProperty('l2Normalize'.toJS, l2Normalize.toJS);
-    options.setProperty('quantize'.toJS, false.toJS);
+      final options = JSObject();
+      options.setProperty('baseOptions'.toJS, baseOptions);
+      options.setProperty('l2Normalize'.toJS, l2Normalize.toJS);
+      options.setProperty('quantize'.toJS, false.toJS);
 
-    final constructor = _MpTextEmbedderConstructor._(rawEmbedder as JSObject);
-    final embedder =
-        await constructor.createFromOptions(fileset, options).toDart;
-    return LiteRtTextEmbedderWeb(embedder);
+      final constructor =
+          _MpTextEmbedderConstructor._(rawEmbedder as JSObject);
+      final embedder =
+          await constructor.createFromOptions(fileset, options).toDart;
+      return LiteRtTextEmbedderWeb(embedder);
+    } finally {
+      if (createdTempBlobUrl) {
+        try {
+          web.URL.revokeObjectURL(resolvedAssetPath);
+        } catch (_) {}
+      }
+    }
   }
 
   @override
   Future<String> verifyVisionModel(String modelPath) async {
+    final safeModelPath = LiteRtUrlPolicy.validateModelAssetUrl(modelPath);
+    final safeBase = LiteRtUrlPolicy.validateTrustedModuleUrl(_mpVisionBase);
     final res = await (_webAiHelper.callMethod(
       'verifyVision'.toJS,
-      modelPath.toJS,
-      _mpVisionBase.toJS,
+      safeModelPath.toJS,
+      safeBase.toJS,
     ) as JSPromise<JSString>)
         .toDart;
     return res.toDart;
@@ -884,10 +1169,12 @@ window.__saiaWebAi = {
 
   @override
   Future<String> verifyAudioModel(String modelPath) async {
+    final safeModelPath = LiteRtUrlPolicy.validateModelAssetUrl(modelPath);
+    final safeBase = LiteRtUrlPolicy.validateTrustedModuleUrl(_mpAudioBase);
     final res = await (_webAiHelper.callMethod(
       'verifyAudio'.toJS,
-      modelPath.toJS,
-      _mpAudioBase.toJS,
+      safeModelPath.toJS,
+      safeBase.toJS,
     ) as JSPromise<JSString>)
         .toDart;
     return res.toDart;
@@ -911,8 +1198,8 @@ class LiteRtBundleIncompatible implements Exception {
   String toString() =>
       'El acelerador WebGPU rechazó este paquete porque utiliza operaciones 5D '
       'no soportadas en este navegador. Selecciona uno de los niveles curados de '
-      'Itzli compatibles con WebGPU (Itzli Chispa · 360M, Itzli Fugaz · 0.5B, '
-      'Itzli Pulso · 1B o Itzli Centella · 1.5B).';
+      'Itzli compatibles con WebGPU (Itzli Chispa, Itzli Fugaz, Itzli Centella '
+      'o Itzli Semilla).';
 }
 
 // ==========================================
@@ -926,16 +1213,40 @@ class LiteRtModelWeb implements LiteRtModel {
 
   @override
   Future<Float32List> run(Float32List input, List<int> shape) async {
-    final jsData = input.toJS;
+    if (shape.isEmpty) {
+      throw ArgumentError.value(shape, 'shape', 'Tensor shape must not be empty');
+    }
+    var expectedElements = 1;
     final jsShape = JSArray<JSNumber>();
     for (final s in shape) {
+      if (!s.isFinite || s <= 0 || s > 268435456) {
+        throw ArgumentError.value(
+          shape,
+          'shape',
+          'Tensor shape dimensions must be positive finite integers',
+        );
+      }
+      expectedElements *= s;
+      if (!expectedElements.isFinite || expectedElements > 268435456) {
+        throw ArgumentError.value(shape, 'shape', 'Tensor shape product overflow');
+      }
       jsShape.add(s.toJS);
     }
+    if (expectedElements != input.length) {
+      throw ArgumentError(
+        'Input length (${input.length}) does not match shape $shape ($expectedElements)',
+      );
+    }
+    final jsData = input.toJS;
 
     final inputTensor = _JsLiteRtTensor(jsData, jsShape);
     final results = await _jsModel.run(inputTensor).toDart;
+    final dartResults = results.toDart;
+    if (dartResults.isEmpty) {
+      throw StateError('LiteRT model returned 0 output tensors');
+    }
 
-    final outputTensor = results.toDart[0];
+    final outputTensor = dartResults[0];
     final wasmTensor = await outputTensor.moveTo('wasm'.toJS).toDart;
     final array = wasmTensor.toTypedArray();
 
@@ -1017,12 +1328,21 @@ class WebLlmModelWeb implements LiteRtLmModel {
     String prompt, {
     int maxTokens = 512,
     double temp = 0.4,
+    double? temperature,
     double topP = 0.9,
     int topK = 40,
     int? seed,
   }) {
     final controller = StreamController<String>();
-    _runGeneration(controller, prompt, maxTokens, temp, topP);
+    _runGeneration(
+      controller,
+      prompt,
+      maxTokens,
+      temperature ?? temp,
+      topP,
+      topK,
+      seed,
+    );
     return controller.stream;
   }
 
@@ -1032,6 +1352,8 @@ class WebLlmModelWeb implements LiteRtLmModel {
     int maxTokens,
     double temp,
     double topP,
+    int topK,
+    int? seed,
   ) async {
     if (_busy) {
       controller.addError(
@@ -1051,15 +1373,23 @@ class WebLlmModelWeb implements LiteRtLmModel {
         }
       }).toJS;
 
+      final safeMaxTokens =
+          (maxTokens.isFinite && maxTokens >= 1) ? maxTokens.clamp(1, 32768) : 512;
+      final safeTemp = temp.isFinite ? temp.clamp(0.0, 2.0) : 0.4;
+      final safeTopP = topP.isFinite ? topP.clamp(0.0, 1.0) : 0.9;
+      final safeTopK = (topK.isFinite && topK >= 1) ? topK.clamp(1, 1000) : 40;
+
       final full = await (_helper.callMethodVarArgs(
         'streamWebLlm'.toJS,
         [
           _engine,
           modelId.toJS,
           prompt.toJS,
-          maxTokens.toJS,
-          temp.toJS,
-          topP.toJS,
+          safeMaxTokens.toJS,
+          safeTemp.toJS,
+          safeTopP.toJS,
+          safeTopK.toJS,
+          seed?.toJS,
           onChunk,
         ],
       ) as JSPromise<JSString>)
@@ -1087,31 +1417,46 @@ class WebLlmModelWeb implements LiteRtLmModel {
 }
 
 class LiteRtLmModelWeb implements LiteRtLmModel {
+  final JSObject _helper;
   final _MpLlmInference _llm;
   bool _busy = false;
 
   @override
   final String backend;
 
-  LiteRtLmModelWeb(this._llm, {required this.backend});
+  LiteRtLmModelWeb(this._helper, this._llm, {required this.backend});
 
   @override
   Stream<String> generateStream(
     String prompt, {
     int maxTokens = 512,
     double temp = 0.4,
+    double? temperature,
     double topP = 0.9,
     int topK = 40,
     int? seed,
   }) {
     final controller = StreamController<String>();
-    _runGeneration(controller, prompt);
+    _runGeneration(
+      controller,
+      prompt,
+      maxTokens,
+      temperature ?? temp,
+      topP,
+      topK,
+      seed,
+    );
     return controller.stream;
   }
 
   Future<void> _runGeneration(
     StreamController<String> controller,
     String prompt,
+    int maxTokens,
+    double temp,
+    double topP,
+    int topK,
+    int? seed,
   ) async {
     if (_busy) {
       controller.addError(
@@ -1132,7 +1477,26 @@ class LiteRtLmModelWeb implements LiteRtLmModel {
         }
       }).toJS;
 
-      final full = await _llm.generateResponse(prompt.toJS, listener).toDart;
+      final safeMaxTokens =
+          (maxTokens.isFinite && maxTokens >= 1) ? maxTokens.clamp(1, 32768) : 512;
+      final safeTemp = temp.isFinite ? temp.clamp(0.0, 2.0) : 0.4;
+      final safeTopP = topP.isFinite ? topP.clamp(0.0, 1.0) : 0.9;
+      final safeTopK = (topK.isFinite && topK >= 1) ? topK.clamp(1, 1000) : 40;
+
+      final full = await (_helper.callMethodVarArgs(
+        'runMpLlm'.toJS,
+        [
+          _llm,
+          prompt.toJS,
+          safeMaxTokens.toJS,
+          safeTemp.toJS,
+          safeTopP.toJS,
+          safeTopK.toJS,
+          seed?.toJS,
+          listener,
+        ],
+      ) as JSPromise<JSString>)
+          .toDart;
 
       if (emitted == 0) {
         final text = full.toDart;
