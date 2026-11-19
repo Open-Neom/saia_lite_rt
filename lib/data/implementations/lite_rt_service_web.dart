@@ -10,6 +10,12 @@ import 'package:web/web.dart' as web;
 import '../../domain/lite_rt_model.dart';
 import '../../domain/lite_rt_service.dart';
 
+typedef NativeLiteRtLmLoader = Future<LiteRtLmModel> Function(
+  String modelPath, {
+  required String accelerator,
+  void Function(String status, double progress)? onProgress,
+});
+
 /// Concrete factory to get the platform-specific implementation.
 class SaiaLiteRt {
   static SaiaLiteRtService? _customInstance;
@@ -21,7 +27,15 @@ class SaiaLiteRt {
     _customInstance = service;
   }
 
+  static void registerNativeLmLoader(NativeLiteRtLmLoader? _) {}
+
   static bool get hasCustomInstance => _customInstance != null;
+
+  static String recommendMobileAccelerator({
+    required String socVendorOrModel,
+    bool isIos = false,
+  }) =>
+      'webgpu';
 }
 
 // ==========================================

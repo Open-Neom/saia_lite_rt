@@ -95,6 +95,10 @@ class LiteRtUrlPolicy {
     'wasm',
     'cpu',
     'gpu',
+    'npu',
+    'qnn',
+    'neuropilot',
+    'coreml',
   };
 
   /// Validates the hardware delegate / accelerator identifier passed to JS.

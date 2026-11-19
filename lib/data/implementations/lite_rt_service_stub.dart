@@ -1,25 +1,62 @@
 import '../../domain/lite_rt_model.dart';
 import '../../domain/lite_rt_service.dart';
 
+/// Native NPU / GPU runtime delegate (`LiteRT-LM 0.19` / `litertlm_dart` style)
+/// that mobile or desktop hosts can register on [SaiaLiteRt].
+typedef NativeLiteRtLmLoader = Future<LiteRtLmModel> Function(
+  String modelPath, {
+  required String accelerator,
+  void Function(String status, double progress)? onProgress,
+});
+
 /// Concrete factory to get the platform-specific implementation.
 ///
-/// On native platforms (Android, iOS, macOS), apps can register a native
-/// LiteRT-LM provider (e.g. backed by `flutter_gemma_litertlm`) via
-/// [registerInstance].
+/// On native platforms (Android Qualcomm QNN / MediaTek NeuroPilot, iOS CoreML
+/// ANE, macOS), apps can register a native LiteRT-LM provider via
+/// [registerInstance] or [registerNativeLmLoader].
 class SaiaLiteRt {
   static SaiaLiteRtService? _customInstance;
+  static NativeLiteRtLmLoader? _nativeLmLoader;
+  static final _StubLiteRtService _nativeDefault = _StubLiteRtService();
 
-  static SaiaLiteRtService get instance =>
-      _customInstance ?? _StubLiteRtService();
+  static SaiaLiteRtService get instance => _customInstance ?? _nativeDefault;
 
   static void registerInstance(SaiaLiteRtService service) {
     _customInstance = service;
   }
 
-  static bool get hasCustomInstance => _customInstance != null;
+  static void registerNativeLmLoader(NativeLiteRtLmLoader? loader) {
+    _nativeLmLoader = loader;
+  }
+
+  static bool get hasCustomInstance =>
+      _customInstance != null || _nativeLmLoader != null;
+
+  /// Recommends the optimal `LiteRT-LM 0.19` hardware delegate for the SoC.
+  static String recommendMobileAccelerator({
+    required String socVendorOrModel,
+    bool isIos = false,
+  }) {
+    if (isIos) return 'coreml';
+    final lower = socVendorOrModel.toLowerCase();
+    if (lower.contains('snapdragon') ||
+        lower.contains('qcom') ||
+        lower.contains('qualcomm') ||
+        lower.contains('sm8')) {
+      return 'qnn';
+    }
+    if (lower.contains('dimensity') ||
+        lower.contains('mediatek') ||
+        lower.contains('mt68') ||
+        lower.contains('mt69')) {
+      return 'neuropilot';
+    }
+    return 'gpu';
+  }
 }
 
 class _StubLiteRtService implements SaiaLiteRtService {
+  final Map<String, LiteRtLmModel> _loadedNativeModels = {};
   @override
   Future<void> loadLiteRt({String? wasmPath}) async {
     if (wasmPath != null) {
@@ -67,28 +104,59 @@ class _StubLiteRtService implements SaiaLiteRtService {
     String accelerator = 'gpu',
     void Function(String status, double progress)? onProgress,
   }) async {
+    final cleanAccel = LiteRtUrlPolicy.validateAccelerator(accelerator);
     final trimmed = modelPath.trim();
     final lower = trimmed.toLowerCase();
-    final isBundle = lower.endsWith('.task') ||
-        lower.endsWith('.bin') ||
-        lower.startsWith('http://') ||
+    final isRemoteOrBlob = lower.startsWith('http://') ||
         lower.startsWith('https://') ||
         lower.startsWith('blob:');
-    if (isBundle || _controlOrSchemeLike(modelPath)) {
+    final isLocalNativeBundle = !isRemoteOrBlob &&
+        !_controlOrSchemeLike(modelPath) &&
+        (lower.endsWith('.litertlm') ||
+            lower.endsWith('.task') ||
+            lower.endsWith('.bin') ||
+            lower.endsWith('.tflite'));
+    if (isRemoteOrBlob || _controlOrSchemeLike(modelPath)) {
       LiteRtUrlPolicy.validateModelAssetUrl(modelPath);
+    } else if (isLocalNativeBundle) {
+      if (trimmed.contains('..') ||
+          RegExp(r'[\x00-\x1F\x7F]').hasMatch(trimmed)) {
+        throw ArgumentError.value(modelPath, 'modelPath', 'Invalid local LiteRT-LM path');
+      }
     } else {
       LiteRtUrlPolicy.validateWebLlmModelId(modelPath);
     }
-    throw UnsupportedError('LiteRT-LM is only supported on the Web platform.');
+
+    final loader = SaiaLiteRt._nativeLmLoader;
+    if (loader != null) {
+      final existing = _loadedNativeModels[trimmed];
+      if (existing != null) return existing;
+      final loaded = await loader(
+        trimmed,
+        accelerator: cleanAccel,
+        onProgress: onProgress,
+      );
+      _loadedNativeModels[trimmed] = loaded;
+      return loaded;
+    }
+    throw UnsupportedError(
+      'LiteRT-LM native delegate not registered; register via SaiaLiteRt.registerNativeLmLoader or run on Web.',
+    );
   }
 
   static bool _controlOrSchemeLike(String s) => s.contains('://') || s.startsWith('//');
 
   @override
-  Future<void> unloadLmModel(String modelPath) async {}
+  Future<void> unloadLmModel(String modelPath) async {
+    final model = _loadedNativeModels.remove(modelPath.trim());
+    if (model != null) {
+      await model.dispose();
+    }
+  }
 
   @override
-  bool isLmModelLoaded(String modelPath) => false;
+  bool isLmModelLoaded(String modelPath) =>
+      _loadedNativeModels.containsKey(modelPath.trim());
 
   @override
   Future<String> verifyVisionModel(String modelPath) async {
