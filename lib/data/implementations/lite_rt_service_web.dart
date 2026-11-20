@@ -1096,7 +1096,12 @@ window.__saiaWebAi = {
     // Stream all Hugging Face bundles (gated and public) directly into the
     // browser Cache API so >1 GiB models stay off the WasmGC heap and persist
     // across reloads.
-    final isGated = url.toLowerCase().contains('gemma');
+    final lowerUrl = url.toLowerCase();
+    // Gemma 4 is published under Apache 2.0 (ungated on Hugging Face); only
+    // legacy Gemma 2/3 / EmbeddingGemma repositories require an HF token.
+    final isApacheGemma4 =
+        lowerUrl.contains('gemma-4') || lowerUrl.contains('gemma4');
+    final isGated = lowerUrl.contains('gemma') && !isApacheGemma4;
     if (isGated && (token == null || token.isEmpty)) {
       throw StateError(
         'Este modelo de Hugging Face requiere licencia aceptada y un Token HF (hf_...). '
