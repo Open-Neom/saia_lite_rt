@@ -265,6 +265,49 @@ class WebLiteRtService implements SaiaLiteRtService {
   }
 
   @override
+  Future<bool> isModelCached(String modelUrl) async {
+    final safeUrl = LiteRtUrlPolicy.validateModelAssetUrl(modelUrl);
+    try {
+      final result = await (_webAiHelper.callMethod(
+        'isModelCached'.toJS,
+        safeUrl.toJS,
+      ) as JSPromise<JSBoolean>)
+          .toDart;
+      return result.toDart;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> deleteCachedModel(String modelUrl) async {
+    final safeUrl = LiteRtUrlPolicy.validateModelAssetUrl(modelUrl);
+    try {
+      final result = await (_webAiHelper.callMethod(
+        'deleteCachedModel'.toJS,
+        safeUrl.toJS,
+      ) as JSPromise<JSBoolean>)
+          .toDart;
+      return result.toDart;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> clearModelCache() async {
+    try {
+      final result = await (_webAiHelper.callMethod(
+        'clearModelCache'.toJS,
+      ) as JSPromise<JSBoolean>)
+          .toDart;
+      return result.toDart;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
   Future<void> loadLiteRt({String? wasmPath}) async {
     final validatedWasmUrl = LiteRtUrlPolicy.validateTrustedModuleUrl(
       wasmPath ?? 'https://cdn.jsdelivr.net/npm/@litertjs/core/wasm/',
@@ -438,6 +481,37 @@ window.__saiaWebAi = {
   _loadedModels: Object.create(null),
   _loadingPromises: Object.create(null),
   _progressListeners: Object.create(null),
+  _modelCacheName: 'saia-litert-models-v1',
+
+  async isModelCached(url) {
+    if (typeof caches === 'undefined') return false;
+    try {
+      const cache = await caches.open(this._modelCacheName);
+      const match = await cache.match(url);
+      return Boolean(match);
+    } catch (_) {
+      return false;
+    }
+  },
+
+  async deleteCachedModel(url) {
+    if (typeof caches === 'undefined') return false;
+    try {
+      const cache = await caches.open(this._modelCacheName);
+      return await cache.delete(url);
+    } catch (_) {
+      return false;
+    }
+  },
+
+  async clearModelCache() {
+    if (typeof caches === 'undefined') return false;
+    try {
+      return await caches.delete(this._modelCacheName);
+    } catch (_) {
+      return false;
+    }
+  },
 
   async ensureWebLlm() {
     if (!this._webllmMod) {
@@ -621,6 +695,22 @@ window.__saiaWebAi = {
     if (!isHfHost) {
       throw new Error('Untrusted Hugging Face host for authenticated fetch');
     }
+
+    // 1. Check Cache API first — avoids re-downloading multi-GB artifacts
+    //    and keeps bytes off the WasmGC heap (>1 GiB safe under --wasm).
+    const hasCacheApi = typeof caches !== 'undefined';
+    if (hasCacheApi) {
+      try {
+        const cache = await caches.open(this._modelCacheName);
+        const hit = await cache.match(url);
+        if (hit) {
+          if (onProgress) onProgress('Cargando desde caché local...', 1.0);
+          const cachedBlob = await hit.blob();
+          return URL.createObjectURL(cachedBlob);
+        }
+      } catch (_) {}
+    }
+
     const headers = Object.create(null);
     if (token && token.trim().length > 0) {
       headers['Authorization'] = 'Bearer ' + token.trim();
@@ -646,6 +736,61 @@ window.__saiaWebAi = {
     if (!Number.isFinite(total) || total < 0 || total > maxBytes) {
       throw new Error('Model artifact exceeds maximum allowed size (4 GiB)');
     }
+
+    // 2. Stream network response directly into browser Cache API with O(1) RAM
+    //    (prevents V8 WasmGC >1 GiB array traps when building with --wasm).
+    if (hasCacheApi && res.body && res.body.getReader && typeof ReadableStream !== 'undefined') {
+      try {
+        if (navigator.storage && typeof navigator.storage.persist === 'function') {
+          try { await navigator.storage.persist(); } catch (_) {}
+        }
+        const sourceReader = res.body.getReader();
+        let loaded = 0;
+        const progressStream = new ReadableStream({
+          async pull(controller) {
+            const { done, value } = await sourceReader.read();
+            if (done) {
+              controller.close();
+              return;
+            }
+            loaded += value.byteLength;
+            if (loaded > maxBytes) {
+              try { await sourceReader.cancel(); } catch (_) {}
+              controller.error(new Error('Model artifact stream exceeded maximum allowed size (4 GiB)'));
+              return;
+            }
+            controller.enqueue(value);
+            if (onProgress && total > 0) {
+              onProgress('Descargando (' + Math.round((loaded / 1048576) * 10) / 10 + ' MB)...', loaded / total);
+            }
+          },
+          cancel(reason) {
+            return sourceReader.cancel(reason);
+          },
+        });
+
+        const cache = await caches.open(this._modelCacheName);
+        const cacheResp = new Response(progressStream, {
+          status: 200,
+          headers: { 'Content-Type': 'application/octet-stream' },
+        });
+        await cache.put(url, cacheResp);
+        const stored = await cache.match(url);
+        if (stored) {
+          const blob = await stored.blob();
+          return URL.createObjectURL(blob);
+        }
+      } catch (cacheErr) {
+        // If quota or storage error happened after stream started, propagate
+        // size-cap violations and fall back only for Cache API unavailability.
+        const msg = String(cacheErr || '');
+        if (msg.includes('maximum allowed size')) {
+          throw cacheErr;
+        }
+        throw cacheErr;
+      }
+    }
+
     if (!res.body || !res.body.getReader) {
       const blob = await res.blob();
       if (blob.size > maxBytes) {
@@ -948,12 +1093,10 @@ window.__saiaWebAi = {
   }) async {
     if (!LiteRtUrlPolicy.isTrustedHuggingFaceUrl(url)) return url;
     final token = huggingFaceToken;
-    // Si es un repo de litert-community gated (Gemma) o si hay token HF,
-    // descargamos con fetch + Authorization header y creamos un Blob URL.
+    // Stream all Hugging Face bundles (gated and public) directly into the
+    // browser Cache API so >1 GiB models stay off the WasmGC heap and persist
+    // across reloads.
     final isGated = url.toLowerCase().contains('gemma');
-    if (!isGated && (token == null || token.isEmpty)) {
-      return url;
-    }
     if (isGated && (token == null || token.isEmpty)) {
       throw StateError(
         'Este modelo de Hugging Face requiere licencia aceptada y un Token HF (hf_...). '

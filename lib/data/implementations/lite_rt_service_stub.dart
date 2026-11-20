@@ -179,4 +179,19 @@ class _StubLiteRtService implements SaiaLiteRtService {
   void setHuggingFaceToken(String? token) {
     _hfToken = LiteRtUrlPolicy.sanitizeHfToken(token);
   }
+
+  @override
+  Future<bool> isModelCached(String modelUrl) async {
+    LiteRtUrlPolicy.validateModelAssetUrl(modelUrl);
+    return false;
+  }
+
+  @override
+  Future<bool> deleteCachedModel(String modelUrl) async {
+    LiteRtUrlPolicy.validateModelAssetUrl(modelUrl);
+    return false;
+  }
+
+  @override
+  Future<bool> clearModelCache() async => false;
 }

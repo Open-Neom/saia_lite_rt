@@ -26,4 +26,26 @@ void main() {
     );
     expect(script, contains('window.LiteRtTensor = mod.Tensor'));
   });
+
+  test('Cache API contract validates URLs and exposes stable bucket name', () async {
+    expect(LiteRtUrlPolicy.defaultWebModelCacheName, 'saia-litert-models-v1');
+    final svc = SaiaLiteRt.instance;
+    expect(
+      await svc.isModelCached(
+        'https://huggingface.co/litert-community/gemma-3-1b-it/resolve/main/model.task',
+      ),
+      isFalse,
+    );
+    expect(
+      await svc.deleteCachedModel(
+        'https://huggingface.co/litert-community/gemma-3-1b-it/resolve/main/model.task',
+      ),
+      isFalse,
+    );
+    expect(await svc.clearModelCache(), isFalse);
+    await expectLater(
+      () => svc.isModelCached('http://169.254.169.254/latest/meta-data'),
+      throwsArgumentError,
+    );
+  });
 }

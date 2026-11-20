@@ -66,11 +66,23 @@ abstract class SaiaLiteRtService {
   /// (como Gemma 3 `-web.task` o EmbeddingGemma).
   String? get huggingFaceToken;
   void setHuggingFaceToken(String? token);
+
+  /// Returns `true` if [modelUrl] is already persisted in the browser Cache API.
+  Future<bool> isModelCached(String modelUrl);
+
+  /// Deletes a single cached model entry by [modelUrl] from browser Cache API.
+  Future<bool> deleteCachedModel(String modelUrl);
+
+  /// Clears all cached LiteRT/Web model artifacts from browser Cache API.
+  Future<bool> clearModelCache();
 }
 
 /// Pure-Dart security policy for LiteRT / LiteRT-LM URLs and credentials.
 class LiteRtUrlPolicy {
   LiteRtUrlPolicy._();
+
+  /// Browser Cache API bucket used for streaming local models (> 1 GiB safe under `--wasm`).
+  static const String defaultWebModelCacheName = 'saia-litert-models-v1';
 
   static final RegExp _controlOrBidi = RegExp(
     r'[\x00-\x1F\x7F-\x9F\u0085\u200B-\u200F\u061C\u2028\u2029\u202A-\u202E\u2060-\u2069\uFEFF]',
