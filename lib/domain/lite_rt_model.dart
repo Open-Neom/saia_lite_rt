@@ -163,14 +163,36 @@ class LiteRtModelCatalog {
       sizeBytes: 1782579200, // ~1.7 GB
     ),
     LiteRtModelInfo(
+      id: 'gemma4-e2b-web',
+      name: 'Itzli Centella · E2B',
+      description:
+          'Dominio equilibrado de nueva generación con razonamiento integrado y contexto amplio '
+          '(E2B efectivos · ventana 128K · ~1.8 GB VRAM). Corre 100% en tu navegador sin enviar datos.',
+      type: LiteRtModelType.chat,
+      downloadUrl:
+          'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-gpu.litertlm',
+      sizeBytes: 2340870772, // ~2.34 GB verificados en HF (Apache 2.0)
+    ),
+    LiteRtModelInfo(
       id: 'qwen3-4b',
       name: 'Itzli Semilla · 4B',
       description:
-          'Máxima capacidad analítica, código y razonamiento profundo acelerado por GPU '
+          'Capacidad analítica compacta, código y razonamiento acelerado por GPU '
           'en tu navegador (4,000M parámetros · q4f16 · ~3.4 GB VRAM).',
       type: LiteRtModelType.chat,
       downloadUrl: 'Qwen3-4B-q4f16_1-MLC',
       sizeBytes: 2306867200, // ~2.2 GB
+    ),
+    LiteRtModelInfo(
+      id: 'gemma4-e4b-web',
+      name: 'Itzli Semilla · E4B',
+      description:
+          'Máxima capacidad analítica y estratégica en navegador con razonamiento profundo '
+          '(E4B efectivos · ventana 128K · ~3.3 GB VRAM). Ideal para equipos con GPU moderna.',
+      type: LiteRtModelType.chat,
+      downloadUrl:
+          'https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-gpu.litertlm',
+      sizeBytes: 3310938740, // ~3.31 GB verificados en HF (Apache 2.0)
     ),
 
     // ── 2. Memoria Semántica y Embeddings (Familia Itzli Raíz — 100% libres) ──

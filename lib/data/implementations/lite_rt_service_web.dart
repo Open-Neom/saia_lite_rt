@@ -109,6 +109,10 @@ const String kMediaPipeGenAiVersion = '1.0.1-rc.20260902';
 const String _mpBase =
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-genai@$kMediaPipeGenAiVersion';
 
+/// Versión de `@litert-lm/core` (`LiteRT-LM.js`) para bundles `.litertlm`
+/// modernos con WebGPU (p. ej. Gemma 4 E2B / E4B `-gpu.litertlm`).
+const String kLiteRtLmCoreVersion = '0.19.0';
+
 @JS()
 extension type _MpFilesetResolver._(JSObject _) implements JSObject {
   external JSPromise<JSObject> forGenAiTasks([JSString? basePath]);
@@ -477,11 +481,168 @@ class WebLiteRtService implements SaiaLiteRtService {
   static const String _webAiHelperScript = r'''
 window.__saiaWebAi = {
   _webllmMod: null,
+  _litertLmMod: null,
   _engines: Object.create(null),
+  _litertLmEngines: Object.create(null),
+  _litertLmLoading: Object.create(null),
   _loadedModels: Object.create(null),
   _loadingPromises: Object.create(null),
   _progressListeners: Object.create(null),
   _modelCacheName: 'saia-litert-models-v1',
+
+  async ensureLiteRtLmCore() {
+    if (!this._litertLmMod) {
+      this._litertLmMod = await import('https://cdn.jsdelivr.net/npm/@litert-lm/core@0.19.0/+esm');
+    }
+    return this._litertLmMod;
+  },
+
+  isLiteRtLmCoreLoaded(modelUrl) {
+    return Boolean(this._litertLmEngines[modelUrl] && this._loadedModels[modelUrl] === true);
+  },
+
+  async unloadLiteRtLmCore(modelUrl) {
+    const pending = this._litertLmLoading[modelUrl];
+    delete this._litertLmLoading[modelUrl];
+    delete this._progressListeners[modelUrl];
+    this._loadedModels[modelUrl] = false;
+    const engine = this._litertLmEngines[modelUrl];
+    delete this._litertLmEngines[modelUrl];
+    if (pending) {
+      try {
+        const loaded = await pending;
+        if (loaded && typeof loaded.delete === 'function') {
+          await loaded.delete();
+        }
+      } catch (_) {}
+    }
+    if (engine && typeof engine.delete === 'function') {
+      try {
+        await engine.delete();
+      } catch (_) {}
+    }
+  },
+
+  async createLiteRtLmCoreEngine(modelUrl, token, onProgress) {
+    if (this._litertLmEngines[modelUrl] && this._loadedModels[modelUrl] === true) {
+      if (onProgress) onProgress('Listo', 1.0);
+      return this._litertLmEngines[modelUrl];
+    }
+    if (onProgress) {
+      if (!this._progressListeners[modelUrl]) {
+        this._progressListeners[modelUrl] = [];
+      }
+      this._progressListeners[modelUrl].push(onProgress);
+    }
+    if (this._litertLmLoading[modelUrl]) {
+      return await this._litertLmLoading[modelUrl];
+    }
+    const notify = (status, progress) => {
+      const list = this._progressListeners[modelUrl] || [];
+      for (const cb of list) {
+        try {
+          cb(String(status || 'Cargando...'), Number(progress || 0));
+        } catch (_) {}
+      }
+    };
+    const loadTask = (async () => {
+      notify('Descargando modelo...', 0.01);
+      const blob = await this.fetchModelBlob(modelUrl, token, (status, prog) => {
+        notify(status, Math.min(0.92, Number(prog || 0) * 0.92));
+      });
+      notify('Inicializando acelerador WebGPU...', 0.95);
+      const mod = await this.ensureLiteRtLmCore();
+      const backend = mod.Backend && mod.Backend.GPU !== undefined ? mod.Backend.GPU : undefined;
+      const engine = await mod.Engine.create({
+        model: blob,
+        ...(backend !== undefined ? { backend } : {}),
+      });
+      this._litertLmEngines[modelUrl] = engine;
+      this._loadedModels[modelUrl] = true;
+      notify('Listo', 1.0);
+      return engine;
+    })();
+    this._litertLmLoading[modelUrl] = loadTask;
+    try {
+      return await loadTask;
+    } finally {
+      delete this._litertLmLoading[modelUrl];
+      delete this._progressListeners[modelUrl];
+    }
+  },
+
+  async streamLiteRtLmCore(engine, modelUrl, prompt, maxTokens, temp, topP, topK, seed, onChunk) {
+    const messages = [];
+    const regex = /<\|im_start\|>(\w+)\n([\s\S]*?)(?:<\|im_end\|>|$)/g;
+    let match;
+    while ((match = regex.exec(prompt)) !== null) {
+      const role = match[1].trim();
+      const content = match[2].trim();
+      if ((role === 'system' || role === 'user' || role === 'assistant') && content.length > 0) {
+        messages.push({ role, content });
+      }
+    }
+    if (messages.length === 0) {
+      messages.push({ role: 'user', content: prompt.trim() });
+    }
+
+    let activeEngine = engine;
+    if (!activeEngine || this._loadedModels[modelUrl] !== true) {
+      activeEngine = await this.createLiteRtLmCoreEngine(modelUrl, '', null);
+    }
+
+    const lastMsg = messages[messages.length - 1];
+    const prefaceMessages = messages.slice(0, -1);
+    const samplerParams = {
+      temperature: typeof temp === 'number' ? temp : 0.4,
+      p: typeof topP === 'number' ? topP : 0.9,
+      k: typeof topK === 'number' && topK > 0 ? Math.round(topK) : 40,
+    };
+    if (typeof seed === 'number' && Number.isFinite(seed)) {
+      samplerParams.seed = Math.trunc(seed);
+    }
+    const convConfig = {
+      sessionConfig: {
+        samplerParams,
+        maxOutputTokens: typeof maxTokens === 'number' && maxTokens > 0 ? Math.round(maxTokens) : 512,
+      },
+      filterChannelContentFromKvCache: true,
+    };
+    if (prefaceMessages.length > 0) {
+      convConfig.preface = { messages: prefaceMessages };
+    }
+
+    const conv = await activeEngine.createConversation(convConfig);
+    let full = '';
+    try {
+      const stream = conv.sendMessageStreaming(lastMsg.content);
+      const reader = stream.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        let delta = '';
+        if (typeof value.content === 'string') {
+          delta = value.content;
+        } else if (Array.isArray(value.content)) {
+          for (const part of value.content) {
+            if (part && part.type === 'text' && typeof part.text === 'string') {
+              delta += part.text;
+            }
+          }
+        }
+        if (delta) {
+          full += delta;
+          if (onChunk) onChunk(delta);
+        }
+      }
+    } finally {
+      try {
+        await conv.delete();
+      } catch (_) {}
+    }
+    return full;
+  },
 
   async isModelCached(url) {
     if (typeof caches === 'undefined') return false;
@@ -672,7 +833,7 @@ window.__saiaWebAi = {
     return await llm.generateResponse(prompt, onPartial);
   },
 
-  async fetchWithHfToken(url, token, onProgress) {
+  async fetchModelBlob(url, token, onProgress) {
     const maxBytes = 4 * 1024 * 1024 * 1024;
     const parsed = new URL(url);
     const host = (parsed.hostname || '').toLowerCase().replace(/\.+$/, '');
@@ -705,8 +866,7 @@ window.__saiaWebAi = {
         const hit = await cache.match(url);
         if (hit) {
           if (onProgress) onProgress('Cargando desde caché local...', 1.0);
-          const cachedBlob = await hit.blob();
-          return URL.createObjectURL(cachedBlob);
+          return await hit.blob();
         }
       } catch (_) {}
     }
@@ -777,8 +937,7 @@ window.__saiaWebAi = {
         await cache.put(url, cacheResp);
         const stored = await cache.match(url);
         if (stored) {
-          const blob = await stored.blob();
-          return URL.createObjectURL(blob);
+          return await stored.blob();
         }
       } catch (cacheErr) {
         // If quota or storage error happened after stream started, propagate
@@ -796,7 +955,7 @@ window.__saiaWebAi = {
       if (blob.size > maxBytes) {
         throw new Error('Model artifact exceeds maximum allowed size (4 GiB)');
       }
-      return URL.createObjectURL(blob);
+      return blob;
     }
     const reader = res.body.getReader();
     const parts = [];
@@ -814,7 +973,11 @@ window.__saiaWebAi = {
         onProgress('Descargando (' + Math.round((loaded / 1048576) * 10) / 10 + ' MB)...', loaded / total);
       }
     }
-    const blob = new Blob(parts, { type: 'application/octet-stream' });
+    return new Blob(parts, { type: 'application/octet-stream' });
+  },
+
+  async fetchWithHfToken(url, token, onProgress) {
+    const blob = await this.fetchModelBlob(url, token, onProgress);
     return URL.createObjectURL(blob);
   },
 
@@ -1082,9 +1245,15 @@ window.__saiaWebAi = {
     final lower = modelPath.toLowerCase();
     return lower.endsWith('.task') ||
         lower.endsWith('.bin') ||
+        lower.endsWith('.litertlm') ||
         lower.startsWith('http://') ||
         lower.startsWith('https://') ||
         lower.startsWith('blob:');
+  }
+
+  static bool _isLiteRtLmBundleUrl(String modelPath) {
+    final clean = modelPath.toLowerCase().split('?').first.split('#').first;
+    return clean.endsWith('.litertlm');
   }
 
   Future<String> _resolveAuthenticatedUrlIfNeeded(
@@ -1125,6 +1294,18 @@ window.__saiaWebAi = {
   bool isLmModelLoaded(String modelPath) {
     final normalized = _normalizeLmModelPath(modelPath.trim());
     if (!_loadedLmCache.containsKey(normalized)) return false;
+    if (_isLiteRtLmBundleUrl(normalized)) {
+      try {
+        final safeUrl = LiteRtUrlPolicy.validateModelAssetUrl(normalized);
+        final ok = _webAiHelper.callMethod(
+          'isLiteRtLmCoreLoaded'.toJS,
+          safeUrl.toJS,
+        );
+        return ok != null && ok.isA<JSBoolean>() && (ok as JSBoolean).toDart;
+      } catch (_) {
+        return false;
+      }
+    }
     if (!_isTaskBundleUrl(normalized)) {
       try {
         final safeId = LiteRtUrlPolicy.validateWebLlmModelId(normalized);
@@ -1144,6 +1325,17 @@ window.__saiaWebAi = {
   Future<void> unloadLmModel(String modelPath) async {
     final normalized = _normalizeLmModelPath(modelPath.trim());
     final cached = _loadedLmCache.remove(normalized);
+    if (_isLiteRtLmBundleUrl(normalized)) {
+      try {
+        final safeUrl = LiteRtUrlPolicy.validateModelAssetUrl(normalized);
+        await (_webAiHelper.callMethod(
+          'unloadLiteRtLmCore'.toJS,
+          safeUrl.toJS,
+        ) as JSPromise<JSAny?>)
+            .toDart;
+      } catch (_) {}
+      return;
+    }
     if (!_isTaskBundleUrl(normalized)) {
       try {
         final safeId = LiteRtUrlPolicy.validateWebLlmModelId(normalized);
@@ -1180,7 +1372,7 @@ window.__saiaWebAi = {
       if (existing != null) return existing;
     }
 
-    // 1. Vía WebLLM (modelos abiertos pre-compilados para WebGPU: Qwen2.5, SmolLM2, Llama 3.2)
+    // 1. Vía WebLLM (modelos abiertos pre-compilados para WebGPU: Qwen3, Qwen2.5, SmolLM2)
     if (!_isTaskBundleUrl(normalized)) {
       final progressCb = ((JSString status, JSNumber prog) {
         onProgress?.call(status.toDart, prog.toDartDouble);
@@ -1195,6 +1387,39 @@ window.__saiaWebAi = {
         _webAiHelper,
         engine,
         modelId: normalized,
+        backend: 'WebGPU Local',
+      );
+      _loadedLmCache[normalized] = model;
+      return model;
+    }
+
+    // 1b. Vía @litert-lm/core (LiteRT-LM.js) para bundles `.litertlm` (p. ej. Gemma 4 E2B/E4B)
+    if (_isLiteRtLmBundleUrl(normalized)) {
+      final lowerUrl = normalized.toLowerCase();
+      final isApacheGemma4 =
+          lowerUrl.contains('gemma-4') || lowerUrl.contains('gemma4');
+      final token = huggingFaceToken;
+      if (lowerUrl.contains('gemma') &&
+          !isApacheGemma4 &&
+          (token == null || token.isEmpty)) {
+        throw StateError(
+          'Este modelo requiere licencia aceptada y un Token HF (hf_...).',
+        );
+      }
+      final progressCb = ((JSString status, JSNumber prog) {
+        onProgress?.call(status.toDart, prog.toDartDouble);
+      }).toJS;
+      final engine = await (_webAiHelper.callMethod(
+        'createLiteRtLmCoreEngine'.toJS,
+        normalized.toJS,
+        (token ?? '').toJS,
+        progressCb,
+      ) as JSPromise<JSObject>)
+          .toDart;
+      final model = LiteRtLmCoreModelWeb(
+        _webAiHelper,
+        engine,
+        modelUrl: normalized,
         backend: 'WebGPU Local',
       );
       _loadedLmCache[normalized] = model;
@@ -1681,5 +1906,117 @@ class LiteRtLmModelWeb implements LiteRtLmModel {
   @override
   Future<void> dispose() async {
     // Mantenido en caché hasta llamada explícita a unloadLmModel().
+  }
+}
+
+/// Envoltorio WebGPU de `@litert-lm/core` (`LiteRT-LM.js`) para bundles `.litertlm`
+/// modernos (p. ej. Gemma 4 E2B / E4B `-gpu.litertlm`).
+class LiteRtLmCoreModelWeb implements LiteRtLmModel {
+  final JSObject _helper;
+  final JSObject _engine;
+  final String modelUrl;
+  bool _busy = false;
+
+  @override
+  final String backend;
+
+  LiteRtLmCoreModelWeb(
+    this._helper,
+    this._engine, {
+    required this.modelUrl,
+    required this.backend,
+  });
+
+  @override
+  Stream<String> generateStream(
+    String prompt, {
+    int maxTokens = 512,
+    double temp = 0.4,
+    double? temperature,
+    double topP = 0.9,
+    int topK = 40,
+    int? seed,
+  }) {
+    final controller = StreamController<String>();
+    _runGeneration(
+      controller,
+      prompt,
+      maxTokens,
+      temperature ?? temp,
+      topP,
+      topK,
+      seed,
+    );
+    return controller.stream;
+  }
+
+  Future<void> _runGeneration(
+    StreamController<String> controller,
+    String prompt,
+    int maxTokens,
+    double temp,
+    double topP,
+    int topK,
+    int? seed,
+  ) async {
+    if (_busy) {
+      controller.addError(
+        StateError('Ya hay una generación en curso en este modelo.'),
+      );
+      await controller.close();
+      return;
+    }
+    _busy = true;
+
+    var emitted = 0;
+    try {
+      final onChunk = ((JSString delta) {
+        final text = delta.toDart;
+        if (text.isNotEmpty && !controller.isClosed) {
+          controller.add(text);
+          emitted += text.length;
+        }
+      }).toJS;
+
+      final safeMaxTokens =
+          (maxTokens.isFinite && maxTokens >= 1) ? maxTokens.clamp(1, 32768) : 512;
+      final safeTemp = temp.isFinite ? temp.clamp(0.0, 2.0) : 0.4;
+      final safeTopP = topP.isFinite ? topP.clamp(0.0, 1.0) : 0.9;
+      final safeTopK = (topK.isFinite && topK >= 1) ? topK.clamp(1, 1000) : 40;
+
+      final full = await (_helper.callMethodVarArgs(
+        'streamLiteRtLmCore'.toJS,
+        [
+          _engine,
+          modelUrl.toJS,
+          prompt.toJS,
+          safeMaxTokens.toJS,
+          safeTemp.toJS,
+          safeTopP.toJS,
+          safeTopK.toJS,
+          seed?.toJS,
+          onChunk,
+        ],
+      ) as JSPromise<JSString>)
+          .toDart;
+
+      if (emitted == 0) {
+        final text = full.toDart;
+        if (text.isNotEmpty && !controller.isClosed) {
+          controller.add(text);
+        }
+      }
+    } catch (e) {
+      if (!controller.isClosed) controller.addError(e);
+    } finally {
+      _busy = false;
+      if (!controller.isClosed) await controller.close();
+    }
+  }
+
+  @override
+  Future<void> dispose() async {
+    // El ciclo de vida en VRAM del motor WebGPU es persistente hasta
+    // llamada explícita a SaiaLiteRt.instance.unloadLmModel().
   }
 }

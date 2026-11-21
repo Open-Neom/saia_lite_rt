@@ -48,4 +48,19 @@ void main() {
       throwsArgumentError,
     );
   });
+
+  test('Gemma 4 E2B and E4B .litertlm bundles are web-compatible, ungated, and sovereignly branded', () {
+    final e2b = LiteRtModelCatalog.findById('gemma4-e2b-web');
+    final e4b = LiteRtModelCatalog.findById('gemma4-e4b-web');
+    expect(e2b, isNotNull);
+    expect(e4b, isNotNull);
+    expect(e2b!.name, 'Itzli Centella · E2B');
+    expect(e4b!.name, 'Itzli Semilla · E4B');
+    expect(e2b.isWebCompatible, isTrue);
+    expect(e4b.isWebCompatible, isTrue);
+    expect(e2b.requiresHfToken, isFalse);
+    expect(e4b.requiresHfToken, isFalse);
+    expect(e2b.downloadUrl.endsWith('.litertlm'), isTrue);
+    expect(e4b.downloadUrl.endsWith('.litertlm'), isTrue);
+  });
 }
