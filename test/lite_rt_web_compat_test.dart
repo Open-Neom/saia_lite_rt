@@ -62,5 +62,29 @@ void main() {
     expect(e4b.requiresHfToken, isFalse);
     expect(e2b.downloadUrl.endsWith('.litertlm'), isTrue);
     expect(e4b.downloadUrl.endsWith('.litertlm'), isTrue);
+    expect(
+      e2b.downloadUrl,
+      contains('cccc664ea93091c52eeb7867ad4e5466357e14f3'),
+    );
+  });
+
+  test('selectRecommendedWebPrimaryModel promotes Gemma 4 E4B/E2B when browser resources fit', () {
+    final e4b = LiteRtModelCatalog.selectRecommendedWebPrimaryModel(
+      availableStorageBytes: 6 * 1024 * 1024 * 1024,
+      deviceMemoryGb: 16.0,
+    );
+    expect(e4b?.id, 'gemma4-e4b-web');
+
+    final e2b = LiteRtModelCatalog.selectRecommendedWebPrimaryModel(
+      availableStorageBytes: 4 * 1024 * 1024 * 1024,
+      deviceMemoryGb: 8.0,
+    );
+    expect(e2b?.id, 'gemma4-e2b-web');
+
+    final mid = LiteRtModelCatalog.selectRecommendedWebPrimaryModel(
+      availableStorageBytes: 2 * 1024 * 1024 * 1024,
+      deviceMemoryGb: 4.0,
+    );
+    expect(mid?.id, 'qwen3-17b');
   });
 }

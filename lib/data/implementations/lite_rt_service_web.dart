@@ -484,11 +484,44 @@ window.__saiaWebAi = {
   _litertLmMod: null,
   _engines: Object.create(null),
   _litertLmEngines: Object.create(null),
+  _litertLmConvs: Object.create(null),
   _litertLmLoading: Object.create(null),
   _loadedModels: Object.create(null),
   _loadingPromises: Object.create(null),
   _progressListeners: Object.create(null),
   _modelCacheName: 'saia-litert-models-v1',
+  _opfsDirName: 'saia-litert-opfs-v1',
+
+  _opfsKeyForUrl(url) {
+    const str = String(url || '');
+    let hash = 2166136261;
+    for (let i = 0; i < str.length; i++) {
+      hash ^= str.charCodeAt(i);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    const cleanBase = str
+      .split('?')[0]
+      .split('#')[0]
+      .split('/')
+      .pop()
+      .replace(/[^A-Za-z0-9._-]/g, '_')
+      .slice(-48) || 'model.bin';
+    return hash.toString(16).padStart(8, '0') + '_' + cleanBase;
+  },
+
+  async _getOpfsDir(create) {
+    if (typeof navigator === 'undefined' ||
+        !navigator.storage ||
+        typeof navigator.storage.getDirectory !== 'function') {
+      return null;
+    }
+    try {
+      const root = await navigator.storage.getDirectory();
+      return await root.getDirectoryHandle(this._opfsDirName, { create: Boolean(create) });
+    } catch (_) {
+      return null;
+    }
+  },
 
   async ensureLiteRtLmCore() {
     if (!this._litertLmMod) {
@@ -501,7 +534,18 @@ window.__saiaWebAi = {
     return Boolean(this._litertLmEngines[modelUrl] && this._loadedModels[modelUrl] === true);
   },
 
+  async resetLiteRtLmCoreConversation(modelUrl) {
+    const cached = this._litertLmConvs[modelUrl];
+    delete this._litertLmConvs[modelUrl];
+    if (cached && cached.conv && typeof cached.conv.delete === 'function') {
+      try {
+        await cached.conv.delete();
+      } catch (_) {}
+    }
+  },
+
   async unloadLiteRtLmCore(modelUrl) {
+    await this.resetLiteRtLmCoreConversation(modelUrl);
     const pending = this._litertLmLoading[modelUrl];
     delete this._litertLmLoading[modelUrl];
     delete this._progressListeners[modelUrl];
@@ -571,7 +615,7 @@ window.__saiaWebAi = {
     }
   },
 
-  async streamLiteRtLmCore(engine, modelUrl, prompt, maxTokens, temp, topP, topK, seed, onChunk) {
+  async streamLiteRtLmCore(engine, modelUrl, prompt, maxTokens, temp, topP, topK, seed, onChunk, images) {
     const messages = [];
     const regex = /<\|im_start\|>(\w+)\n([\s\S]*?)(?:<\|im_end\|>|$)/g;
     let match;
@@ -593,6 +637,15 @@ window.__saiaWebAi = {
 
     const lastMsg = messages[messages.length - 1];
     const prefaceMessages = messages.slice(0, -1);
+    const prefaceSig = JSON.stringify(prefaceMessages);
+    const samplerSig = [
+      typeof maxTokens === 'number' ? Math.round(maxTokens) : 512,
+      typeof temp === 'number' ? temp : 0.4,
+      typeof topP === 'number' ? topP : 0.9,
+      typeof topK === 'number' ? Math.round(topK) : 40,
+      typeof seed === 'number' && Number.isFinite(seed) ? Math.trunc(seed) : '',
+    ].join('|');
+
     const samplerParams = {
       temperature: typeof temp === 'number' ? temp : 0.4,
       p: typeof topP === 'number' ? topP : 0.9,
@@ -601,26 +654,61 @@ window.__saiaWebAi = {
     if (typeof seed === 'number' && Number.isFinite(seed)) {
       samplerParams.seed = Math.trunc(seed);
     }
-    const convConfig = {
-      sessionConfig: {
-        samplerParams,
-        maxOutputTokens: typeof maxTokens === 'number' && maxTokens > 0 ? Math.round(maxTokens) : 512,
-      },
-      filterChannelContentFromKvCache: true,
-    };
-    if (prefaceMessages.length > 0) {
-      convConfig.preface = { messages: prefaceMessages };
+
+    // Reuse hot WebGPU KV-cache conversation when this turn appends to the
+    // exact prior turn prefix (dramatically faster multi-turn Gemma 4 Web!).
+    let convEntry = this._litertLmConvs[modelUrl];
+    const canReuseConv =
+      convEntry &&
+      convEntry.conv &&
+      convEntry.samplerSig === samplerSig &&
+      convEntry.expectedNextPrefaceSig === prefaceSig;
+
+    let conv;
+    if (canReuseConv) {
+      conv = convEntry.conv;
+    } else {
+      await this.resetLiteRtLmCoreConversation(modelUrl);
+      const convConfig = {
+        sessionConfig: {
+          samplerParams,
+          maxOutputTokens: typeof maxTokens === 'number' && maxTokens > 0 ? Math.round(maxTokens) : 512,
+        },
+        filterChannelContentFromKvCache: true,
+      };
+      if (prefaceMessages.length > 0) {
+        convConfig.preface = { messages: prefaceMessages };
+      }
+      conv = await activeEngine.createConversation(convConfig);
     }
 
-    const conv = await activeEngine.createConversation(convConfig);
+    let inputPayload = lastMsg.content;
+    if (Array.isArray(images) && images.length > 0) {
+      const parts = [];
+      for (const item of images) {
+        if (!item || !item.bytes) continue;
+        const mime = typeof item.mimeType === 'string' && item.mimeType.length > 0
+          ? item.mimeType
+          : 'image/jpeg';
+        const blob = new Blob([item.bytes], { type: mime });
+        parts.push({ type: 'image', data: blob });
+      }
+      parts.push({ type: 'text', text: lastMsg.content });
+      inputPayload = parts;
+    }
+
     let full = '';
+    let succeeded = false;
     try {
-      const stream = conv.sendMessageStreaming(lastMsg.content);
+      const stream = conv.sendMessageStreaming(inputPayload);
       const reader = stream.getReader();
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         if (!value) continue;
+        if (value.channel && String(value.channel).toLowerCase() === 'thought') {
+          continue;
+        }
         let delta = '';
         if (typeof value.content === 'string') {
           delta = value.content;
@@ -636,15 +724,39 @@ window.__saiaWebAi = {
           if (onChunk) onChunk(delta);
         }
       }
+      succeeded = true;
     } finally {
-      try {
-        await conv.delete();
-      } catch (_) {}
+      if (succeeded) {
+        const nextHistory = [
+          ...messages,
+          { role: 'assistant', content: full.trim() },
+        ];
+        this._litertLmConvs[modelUrl] = {
+          conv,
+          samplerSig,
+          expectedNextPrefaceSig: JSON.stringify(nextHistory),
+        };
+      } else {
+        delete this._litertLmConvs[modelUrl];
+        try {
+          await conv.delete();
+        } catch (_) {}
+      }
     }
     return full;
   },
 
   async isModelCached(url) {
+    try {
+      const opfsDir = await this._getOpfsDir(false);
+      if (opfsDir) {
+        try {
+          const handle = await opfsDir.getFileHandle(this._opfsKeyForUrl(url));
+          const file = await handle.getFile();
+          if (file && file.size > 0) return true;
+        } catch (_) {}
+      }
+    } catch (_) {}
     if (typeof caches === 'undefined') return false;
     try {
       const cache = await caches.open(this._modelCacheName);
@@ -656,22 +768,44 @@ window.__saiaWebAi = {
   },
 
   async deleteCachedModel(url) {
-    if (typeof caches === 'undefined') return false;
+    let removed = false;
     try {
-      const cache = await caches.open(this._modelCacheName);
-      return await cache.delete(url);
-    } catch (_) {
-      return false;
+      const opfsDir = await this._getOpfsDir(false);
+      if (opfsDir) {
+        try {
+          await opfsDir.removeEntry(this._opfsKeyForUrl(url));
+          removed = true;
+        } catch (_) {}
+      }
+    } catch (_) {}
+    if (typeof caches !== 'undefined') {
+      try {
+        const cache = await caches.open(this._modelCacheName);
+        if (await cache.delete(url)) removed = true;
+      } catch (_) {}
     }
+    return removed;
   },
 
   async clearModelCache() {
-    if (typeof caches === 'undefined') return false;
+    let cleared = false;
     try {
-      return await caches.delete(this._modelCacheName);
-    } catch (_) {
-      return false;
+      if (typeof navigator !== 'undefined' &&
+          navigator.storage &&
+          typeof navigator.storage.getDirectory === 'function') {
+        const root = await navigator.storage.getDirectory();
+        try {
+          await root.removeEntry(this._opfsDirName, { recursive: true });
+          cleared = true;
+        } catch (_) {}
+      }
+    } catch (_) {}
+    if (typeof caches !== 'undefined') {
+      try {
+        if (await caches.delete(this._modelCacheName)) cleared = true;
+      } catch (_) {}
     }
+    return cleared;
   },
 
   async ensureWebLlm() {
@@ -857,8 +991,23 @@ window.__saiaWebAi = {
       throw new Error('Untrusted Hugging Face host for authenticated fetch');
     }
 
-    // 1. Check Cache API first — avoids re-downloading multi-GB artifacts
-    //    and keeps bytes off the WasmGC heap (>1 GiB safe under --wasm).
+    // 1. Check disk-backed OPFS first (zero-copy File/Blob ideal for 2.3–3.3 GB
+    //    Gemma 4 .litertlm bundles without Cache API / RAM Blob spikes).
+    try {
+      const opfsDir = await this._getOpfsDir(false);
+      if (opfsDir) {
+        try {
+          const handle = await opfsDir.getFileHandle(this._opfsKeyForUrl(url));
+          const file = await handle.getFile();
+          if (file && file.size > 0) {
+            if (onProgress) onProgress('Cargando desde OPFS local...', 1.0);
+            return file;
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    // 1b. Check legacy Cache API next (backwards compatible with existing caches).
     const hasCacheApi = typeof caches !== 'undefined';
     if (hasCacheApi) {
       try {
@@ -897,8 +1046,69 @@ window.__saiaWebAi = {
       throw new Error('Model artifact exceeds maximum allowed size (4 GiB)');
     }
 
-    // 2. Stream network response directly into browser Cache API with O(1) RAM
-    //    (prevents V8 WasmGC >1 GiB array traps when building with --wasm).
+    // 2. Prefer OPFS streaming write for large multi-GB models (O(1) RAM,
+    //    persisted on disk, returns disk-backed File without >2 GiB Blob copy).
+    if (res.body && res.body.getReader) {
+      try {
+        if (navigator.storage && typeof navigator.storage.persist === 'function') {
+          try { await navigator.storage.persist(); } catch (_) {}
+        }
+        const opfsDir = await this._getOpfsDir(true);
+        if (opfsDir) {
+          const finalKey = this._opfsKeyForUrl(url);
+          const partKey = finalKey + '.part';
+          const partHandle = await opfsDir.getFileHandle(partKey, { create: true });
+          if (typeof partHandle.createWritable === 'function') {
+            const writable = await partHandle.createWritable();
+            const reader = res.body.getReader();
+            let loaded = 0;
+            try {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                loaded += value.byteLength;
+                if (loaded > maxBytes) {
+                  try { await reader.cancel(); } catch (_) {}
+                  throw new Error('Model artifact stream exceeded maximum allowed size (4 GiB)');
+                }
+                await writable.write(value);
+                if (onProgress && total > 0) {
+                  onProgress('Descargando (' + Math.round((loaded / 1048576) * 10) / 10 + ' MB)...', loaded / total);
+                }
+              }
+              await writable.close();
+              if (typeof partHandle.move === 'function') {
+                await partHandle.move(finalKey);
+                const finalHandle = await opfsDir.getFileHandle(finalKey);
+                return await finalHandle.getFile();
+              }
+              // Fallback if FileSystemHandle.move is absent: write directly to finalKey
+              const finalHandle = await opfsDir.getFileHandle(finalKey, { create: true });
+              const finalWritable = await finalHandle.createWritable();
+              const partFile = await partHandle.getFile();
+              await partFile.stream().pipeTo(finalWritable);
+              try { await opfsDir.removeEntry(partKey); } catch (_) {}
+              return await finalHandle.getFile();
+            } catch (opfsWriteErr) {
+              try { await writable.abort(); } catch (_) {}
+              try { await opfsDir.removeEntry(partKey); } catch (_) {}
+              const msg = String(opfsWriteErr || '');
+              if (msg.includes('maximum allowed size')) throw opfsWriteErr;
+              // Re-throw if stream already consumed so caller sees accurate error
+              if (loaded > 0) throw opfsWriteErr;
+            }
+          }
+        }
+      } catch (opfsErr) {
+        const msg = String(opfsErr || '');
+        if (msg.includes('maximum allowed size') || res.bodyUsed) {
+          throw opfsErr;
+        }
+      }
+    }
+
+    // 2b. Fallback: Stream network response into browser Cache API with O(1) RAM
+    //     (prevents V8 WasmGC >1 GiB array traps when building with --wasm).
     if (hasCacheApi && res.body && res.body.getReader && typeof ReadableStream !== 'undefined') {
       try {
         if (navigator.storage && typeof navigator.storage.persist === 'function') {
@@ -1910,8 +2120,9 @@ class LiteRtLmModelWeb implements LiteRtLmModel {
 }
 
 /// Envoltorio WebGPU de `@litert-lm/core` (`LiteRT-LM.js`) para bundles `.litertlm`
-/// modernos (p. ej. Gemma 4 E2B / E4B `-gpu.litertlm`).
-class LiteRtLmCoreModelWeb implements LiteRtLmModel {
+/// modernos (p. ej. Gemma 4 E2B / E4B `-gpu.litertlm`) con KV-cache persistente
+/// multi-turno y soporte multimodal de imágenes local.
+class LiteRtLmCoreModelWeb implements LiteRtLmModel, LiteRtMultimodalLmModel {
   final JSObject _helper;
   final JSObject _engine;
   final String modelUrl;
@@ -1919,6 +2130,11 @@ class LiteRtLmCoreModelWeb implements LiteRtLmModel {
 
   @override
   final String backend;
+
+  @override
+  bool get supportsImageInput =>
+      modelUrl.toLowerCase().contains('gemma-4') ||
+      modelUrl.toLowerCase().endsWith('.litertlm');
 
   LiteRtLmCoreModelWeb(
     this._helper,
@@ -1946,8 +2162,44 @@ class LiteRtLmCoreModelWeb implements LiteRtLmModel {
       topP,
       topK,
       seed,
+      const [],
     );
     return controller.stream;
+  }
+
+  @override
+  Stream<String> generateMultimodalStream(
+    String prompt, {
+    required List<({Uint8List bytes, String mimeType})> images,
+    int maxTokens = 1024,
+    double temp = 0.4,
+    double topP = 0.9,
+    int topK = 40,
+    int? seed,
+  }) {
+    final controller = StreamController<String>();
+    _runGeneration(
+      controller,
+      prompt,
+      maxTokens,
+      temp,
+      topP,
+      topK,
+      seed,
+      images,
+    );
+    return controller.stream;
+  }
+
+  @override
+  Future<void> resetConversation() async {
+    try {
+      await (_helper.callMethod(
+        'resetLiteRtLmCoreConversation'.toJS,
+        modelUrl.toJS,
+      ) as JSPromise<JSAny?>)
+          .toDart;
+    } catch (_) {}
   }
 
   Future<void> _runGeneration(
@@ -1958,6 +2210,7 @@ class LiteRtLmCoreModelWeb implements LiteRtLmModel {
     double topP,
     int topK,
     int? seed,
+    List<({Uint8List bytes, String mimeType})> images,
   ) async {
     if (_busy) {
       controller.addError(
@@ -1984,6 +2237,18 @@ class LiteRtLmCoreModelWeb implements LiteRtLmModel {
       final safeTopP = topP.isFinite ? topP.clamp(0.0, 1.0) : 0.9;
       final safeTopK = (topK.isFinite && topK >= 1) ? topK.clamp(1, 1000) : 40;
 
+      JSArray<JSObject>? jsImages;
+      if (images.isNotEmpty) {
+        jsImages = JSArray<JSObject>();
+        for (final item in images) {
+          if (item.bytes.isEmpty) continue;
+          final obj = JSObject();
+          obj.setProperty('bytes'.toJS, item.bytes.toJS);
+          obj.setProperty('mimeType'.toJS, item.mimeType.toJS);
+          jsImages.add(obj);
+        }
+      }
+
       final full = await (_helper.callMethodVarArgs(
         'streamLiteRtLmCore'.toJS,
         [
@@ -1996,6 +2261,7 @@ class LiteRtLmCoreModelWeb implements LiteRtLmModel {
           safeTopK.toJS,
           seed?.toJS,
           onChunk,
+          jsImages,
         ],
       ) as JSPromise<JSString>)
           .toDart;

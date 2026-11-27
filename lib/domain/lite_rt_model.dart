@@ -166,12 +166,12 @@ class LiteRtModelCatalog {
       id: 'gemma4-e2b-web',
       name: 'Itzli Centella · E2B',
       description:
-          'Dominio equilibrado de nueva generación con razonamiento integrado y contexto amplio '
+          'Dominio equilibrado de nueva generación con razonamiento integrado, visión multimodal y contexto amplio '
           '(E2B efectivos · ventana 128K · ~1.8 GB VRAM). Corre 100% en tu navegador sin enviar datos.',
       type: LiteRtModelType.chat,
       downloadUrl:
-          'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-gpu.litertlm',
-      sizeBytes: 2340870772, // ~2.34 GB verificados en HF (Apache 2.0)
+          'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/cccc664ea93091c52eeb7867ad4e5466357e14f3/gemma-4-E2B-it-gpu.litertlm',
+      sizeBytes: 2340870772, // ~2.34 GB verificados en HF (Apache 2.0 · rev cccc664ea930)
     ),
     LiteRtModelInfo(
       id: 'qwen3-4b',
@@ -410,6 +410,44 @@ class LiteRtModelCatalog {
     }
     return null;
   }
+
+  /// Selects the strongest local-first primary WebGPU chat model (preferring
+  /// Gemma 4 E4B / E2B when browser RAM & OPFS storage allow) to minimize
+  /// cloud model usage in Itzli Web.
+  static LiteRtModelInfo? selectRecommendedWebPrimaryModel({
+    int? availableStorageBytes,
+    double? deviceMemoryGb,
+  }) {
+    const minE4bStorage = 5200 * 1024 * 1024; // ~5.2 GB headroom for 3.3 GB bundle
+    const minE2bStorage = 3600 * 1024 * 1024; // ~3.6 GB headroom for 2.34 GB bundle
+    const min17bStorage = 1800 * 1024 * 1024; // ~1.8 GB headroom for 980 MB bundle
+
+    final canE4b = (availableStorageBytes == null ||
+            availableStorageBytes >= minE4bStorage) &&
+        (deviceMemoryGb != null && deviceMemoryGb >= 12.0);
+    if (canE4b) {
+      return findById('gemma4-e4b-web') ?? findById('gemma4-e2b-web');
+    }
+
+    final canE2b = (availableStorageBytes == null ||
+            availableStorageBytes >= minE2bStorage) &&
+        (deviceMemoryGb == null || deviceMemoryGb >= 8.0);
+    if (canE2b) {
+      return findById('gemma4-e2b-web');
+    }
+
+    final can17b = (availableStorageBytes == null ||
+            availableStorageBytes >= min17bStorage) &&
+        (deviceMemoryGb == null || deviceMemoryGb >= 4.0);
+    if (can17b) {
+      return findById('qwen3-17b') ?? findById('qwen25-05b');
+    }
+
+    return selectRecommendedWebAuxiliaryModel(
+      availableStorageBytes: availableStorageBytes,
+      deviceMemoryGb: deviceMemoryGb,
+    );
+  }
 }
 
 /// Snapshot of browser WebGPU, storage quota, and RAM readiness for automatic
@@ -515,4 +553,27 @@ abstract class LiteRtLmModel {
 
   /// Releases the resources allocated for this model.
   Future<void> dispose();
+}
+
+/// Optional multimodal capability implemented by WebGPU `@litert-lm/core`
+/// models (e.g. Gemma 4 E2B / E4B `.litertlm` bundles) supporting local
+/// image understanding and persistent KV-cache multi-turn sessions.
+abstract interface class LiteRtMultimodalLmModel {
+  /// True when the loaded bundle supports inline image inputs in WebGPU.
+  bool get supportsImageInput;
+
+  /// Generates a streaming reply conditioned on [prompt] and [images]
+  /// (each entry carries raw encoded image bytes + MIME type such as `image/jpeg`).
+  Stream<String> generateMultimodalStream(
+    String prompt, {
+    required List<({Uint8List bytes, String mimeType})> images,
+    int maxTokens = 1024,
+    double temp = 0.4,
+    double topP = 0.9,
+    int topK = 40,
+    int? seed,
+  });
+
+  /// Resets the persistent KV-cache conversation session for this model.
+  Future<void> resetConversation();
 }
